@@ -18,7 +18,7 @@ library(openxlsx)
 #--------Setup section--------------
 #Loading RNA Data
 
-input_data <- read.xlsx("C:/Users/invate/OneDrive - University of Southampton/Desktop/KCL Applied Bio 25-26/7BBG1002 Applied Bio and Cloud Computing/Group project/Coursework Replication/Georgia Work/DESeq2_control_vs_evolved_padj0.01_genes.xlsx",
+input_data <- read.xlsx("C:/Path/To/File/DESeq2_control_vs_evolved_padj0.01_genes.xlsx",
                         sep = ",", 
                         na.strings = c("NA", "NULL", "null", ""))
 clean_df <- na.omit(input_data) # Removes empty rows
@@ -26,7 +26,7 @@ clean_df$Gene_Name <- ifelse(is.na(clean_df$Gene_Name) | clean_df$Gene_Name == "
 head(input_data)
 
 #Loading Proteomics data
-prot_raw <- read.csv("C:/Users/invate/OneDrive - University of Southampton/Desktop/KCL Applied Bio 25-26/7BBG1002 Applied Bio and Cloud Computing/Group project/Coursework Replication/Proteomics Process/Original Attempt 2 Results.csv", header = TRUE, stringsAsFactors = FALSE)
+prot_raw <- read.csv("C:/Path/To/File/Original Attempt 2 Results.csv", header = TRUE, stringsAsFactors = FALSE)
 prot_df <- prot_raw[-c(1,2), ] # Remove first two no needed rows
 
 prot_df$Diff <- as.numeric(prot_df$Student.s.T.test.Difference.Control_Reconstruction) # Making columns numeric
@@ -50,7 +50,7 @@ ui <- tagList(
           color: black;              /* Black Text */
       }
 
-      /* 2. style of activly selected tab */
+      /* 2. style of actively selected tab */
       .navbar-nav > .active > a {
           background-color: #1465AC; /* Blue background when selected */
           color: white;              /* White text when selected */
@@ -146,7 +146,7 @@ server <- function(input, output) {
           padj < input$pval_cutoff & abs(log2FoldChange) > input$lfc_cutoff ~ "Significant",
           TRUE ~ "Not Significant"
         ),
-        # Distinguish Up vs Down for coloring
+        # Distinguish Up vs Down for colouring
         ColorGroup = case_when(
           padj < input$pval_cutoff & log2FoldChange > input$lfc_cutoff ~ "Upregulated",
           padj < input$pval_cutoff & log2FoldChange < -input$lfc_cutoff ~ "Downregulated",
@@ -179,7 +179,7 @@ server <- function(input, output) {
   
   output$barPlot <- renderPlotly({
     
-#Getring the data
+# Getting the data
     data <- filtered_data() %>%
       filter(Significance == "Significant")
     
@@ -291,4 +291,5 @@ server <- function(input, output) {
   })
 }
 # Run the application 
+
 shinyApp(ui = ui, server = server)
