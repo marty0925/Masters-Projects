@@ -1,5 +1,5 @@
 
-#Database creation and using it
+#Use and Create Database
 create database dcdmcw;
 use dcdmcw;
 
@@ -251,3 +251,4 @@ where dcdmCW.all_genes.gene_symbol = 'Larp6'; -- Group 4 Query genes; Fam72a, La
 -- Null return values in the "Mandatory Procedure" column are caused by non-IMPC results which do not indicate if procedures are mandatory
 -- A Null return in both "DO Disease Name" and "OMIM Id" are a result of that gene symbol not being associated with a disease in our metadata
 -- NA values in the P-value column indicate that a value of either 1 or 0 was calcualted which is a mathimatical impossibility
+
