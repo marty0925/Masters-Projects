@@ -1,0 +1,48 @@
+---
+title: "Random Sampling"
+format: html
+editor: visual
+---
+
+## The aim of the document is to randomly sample my SRR_IDs.txt file
+
+Set the working directory where both the SRR_IDs.txt file and this file are located.
+
+```{r}
+getwd()
+setwd("/cephfs/volumes/hpc_home/k25115470/64fd73c1-4492-46cf-8aee-c7755c6cb719/Extended_Research_Project")
+```
+
+```{r}
+file.exists("SRR_IDs.txt") #To confirm that the required file is present in the current directory that we are working in
+```
+
+Now reading in the text file into R
+
+```{r}
+SRR_IDs<- read.delim("SRR_IDs.txt", header = F, sep = "\t") #Reads and puts each of the individual Ids into an object
+data.class(SRR_IDs)
+print(SRR_IDs)
+Vector_SRR <- SRR_IDs[,1]
+data.class(Vector_SRR)
+print(Vector_SRR)
+```
+
+Next, we need to randomly sample the SRR_IDs object to get the necessary samples
+
+```{r}
+set.seed(25115470) #Seed set for sampling consistency
+Final_Choice1 <- sample(Vector_SRR, size = 20, replace = F) #Creates an object of our final data so that it can no be changed. 
+```
+
+Double-check that all SRRs are unique
+
+```{r}
+length(unique(Final_Choice1))#Remove length function if you want to have the specific IDs that were selected. 
+```
+
+To save this information, we will write the results to a CSV file.
+
+```{r}
+write.table(Final_Choice1, file = "Random_SRR_IDs.txt", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
