@@ -12,3 +12,5 @@ STAR --runThreadN 25 \
 --genomeFastaFiles /scratch/prj/dn_hamidlab_msc_proj/k25115470/Originals/RefGenome_GRCm39/GRCm39.primary_assembly.genome.fa \
 --sjdbGTFfile /scratch/prj/dn_hamidlab_msc_proj/k25115470/Originals/RefGenome_GRCm39/gencode.vM38.primary_assembly.annotation.gtf \
 --sjdbOverhang 51
+
+#At the end of the Log.out file, there will be a message similar to "Jan 26 11:47:11 ..... finished successfully"
