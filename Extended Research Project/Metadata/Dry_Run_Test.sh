@@ -11,7 +11,7 @@ module load star/2.7.10b-gcc-13.2.0
 GENOME_DIR="/scratch/prj/dn_hamidlab_msc_proj/k25115470/Originals/RefGenome_HumanGRCh38.p14/Index"
 INPUT_CSV="/scratch/prj/dn_hamidlab_msc_proj/k25115470/metadata/SRR_ReadType.csv"
 OUTPUT_DIR="/scratch/prj/dn_hamidlab_msc_proj/k25115470/Results/Human_Star_Alignment/Mapped_results"
-FASTQ_DIR="/scratch/prj/dn_hamidlab_msc_proj/k25115470/Originals/All_Fastq_Files"
+FASTQ_DIR="/scratch/prj/dn_hamidlab_msc_proj/k25115470/Originals/All_FastQ_Files"
 THREADS=16
 
 mkdir -p "$OUTPUT_DIR"
