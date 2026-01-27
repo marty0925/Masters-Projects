@@ -2,3 +2,4 @@
 cut -d ',' -f 1, 26 SraRunTable.csv | tail -n +2 > SRR_ReadType.csv
 
 #The column "LibraryLayout", which contains information about whether the reads were single or paired-end, was selected using column 26, despite being in column 19, because cut reads every comma in the file.  
+#Column headers were removed for simplicity of using this metadata file
