@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=STAR_Index
+#SBATCH --job-name=STAR_Alignment
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=16
-#SBATCH --time=08:00:00
+#SBATCH --time=15:00:00
 
 module load star/2.7.10b-gcc-13.2.0
 
