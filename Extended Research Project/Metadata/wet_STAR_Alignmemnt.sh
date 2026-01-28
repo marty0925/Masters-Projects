@@ -3,7 +3,7 @@
 #SBATCH --ntasks=1
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=16
-#SBATCH --time=15:00:00
+#SBATCH --time=48:00:00
 
 module load star/2.7.10b-gcc-13.2.0
 
@@ -22,7 +22,7 @@ while IFS=',' read -r SRR_ID ReadType; do # read -r reads Run_id and Layout into
     echo "Type: $ReadType"
 
     # Defining the output prefix
-    OUT_PREFIX="${OUTPUT_DIR}/${SRR_ID}_"
+    OUT_PREFIX="${OUTPUT_DIR}/${SRR_ID}/${SRR_ID}_"
 
     if [ "$ReadType" == "PAIRED" ]; then #Paried-end Side
 
