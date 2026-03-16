@@ -1,0 +1,955 @@
+---
+title: "WrkFlw_Filter_MT_Seurat"
+format: html
+editor: visual
+---
+
+## Setting path to Libraries
+
+Setting the packages' path
+
+```{r}
+.libPaths("/scratch/prj/dn_hamidlab_msc_proj/Libraries") #HPC path to libraries used
+```
+
+Loading the Older version of ggplot2 which is fully compatible with the latest version of Seurat.
+
+##### ggplot2 dependency issue fix
+
+(09/02/26) Currently, the Seurat package is not fully compatible with the latest version of ggplot2 (v4.0.0). To get around this, I download an older version into the Libraries folder, which I can then load into the R script when needed. (This should help with the VlnPlot problem.)
+
+```{r}
+Old_ggplot_Path <- "/scratch/prj/dn_hamidlab_msc_proj/Libraries/ggplot2_3.5.2_Old/"
+
+#Comment back in if needed
+# remotes::install_version( "ggplot2", version = "3.5.2", lib = Old_ggplot_Path, repos = "http://cran.us.r-project.org")
+```
+
+Next is to load the older version of ggplot2.
+
+```{r}
+library(ggplot2, lib.loc = Old_ggplot_Path) #Ensure path above is right for machine.
+```
+
+### Preparing Seurat Dependencies
+
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+```
+
+#### Loading in latest Seurat object
+
+Loading the object made previously. Change the file location of the object depending on where it is found in the environment.
+
+```{r}
+# Load the data into the ALS_Seurat object
+ALS_Seurat <- readRDS("/scratch/prj/dn_hamidlab_msc_proj/k25115470/Results/ALS_Seurat_Analysis/MT_Rem_WrkFlw/MT_Rem_Wrkflw_ALS_Seurat.rds") 
+#This is the file result from "Seurat_Analysis.qmd" and is before the integration sets.
+```
+
+Inspect the object to make sure the correct version is loaded
+
+```{r}
+head(ALS_Seurat)
+#Should be the counts data
+```
+
+## Adding in the metadata to object
+
+##### Creating metadata as a dataframe object in R
+
+```{r}
+geometadata <- read.csv("metadata/SraRunTable.csv", header = T) #Path/to/file/SraRunTable.csv
+data.class(geometadata)
+```
+
+##### Final addition
+
+```{r}
+# Check if the actual SRR IDs in the 'Run' column exist in the Seurat object
+all(geometadata$Run %in% colnames(ALS_Seurat)) #TRUE
+rownames(geometadata) <- geometadata$Run #Puts the SRR IDs as the rownnames
+
+ALS_Seurat <- AddMetaData(ALS_Seurat, geometadata) #Adds the SraRunTable Metadata table
+head(ALS_Seurat@meta.data)
+```
+
+## QC Metrics of the Seurat Object
+
+Next, looking at the main QC metrics of the information in my object.
+
+#### Violin plots
+
+```{r}
+# Visualise QC metrics as a violin plot
+Vlnplots_Seurat <- VlnPlot(ALS_Seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, assay = "RNA", combine = F)
+Vlnplots_Seurat[1]
+Vlnplots_Seurat[2]
+Vlnplots_Seurat[3]
+```
+
+#### Feature-Feature Plots
+
+Feature scatter can be used to visualise the relationship between two features. However it can be also be used for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+```{r}
+FeatureScatter_plots <- c("nCountVsPerMt.png", "nCountVsfCount.png")
+
+plot1 <- FeatureScatter(ALS_Seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(ALS_Seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 
+plot2
+```
+
+## Removing unwanted cells (Filtering)
+
+Filtering of the dataset using the subset function
+
+```{r}
+#Takes into account the violin plots and the fact the data comes from SMART-Seq2
+ALS_Seurat <- subset(ALS_Seurat,subset = nFeature_RNA > 2000 & percent.mt < 40) 
+
+# Dropped the need to filter the nCounts_RNA because there are enough counts and the quality is high quality. 
+```
+
+Checking what the new data looks like
+
+```{r}
+head(ALS_Seurat$orig.ident)
+length(ALS_Seurat$orig.ident)
+#A new length of 1349 as opposed to the original 1415
+```
+
+## Initial Normalisation
+
+Run a normalisation step to be able to get the scale.data layer in the Seurat object.
+
+```{r}
+ALS_Seurat <- NormalizeData(ALS_Seurat, normalization.method = "LogNormalize") %>% FindVariableFeatures(selection.method = "vst", nfeatures = 4000) %>% ScaleData()
+
+#nfeatures increased from the default of 2000 to 3000 becuase of the higher quality of the Smart-Seq2 data and after looking at the feature plots. 
+#Piped all 3 normalisation commands together for better speed
+```
+
+### Running the PCA
+
+Next is to perform the PCA dimensional reduction using the runPCA command. This projects cells into a lower dimensional spaced based on patterns of gene co-expression. It also provides us with the necessary information to be able to the doublet finder steps
+
+```{r}
+ALS_Seurat <- RunPCA(ALS_Seurat, npcs = 50, verbose = F)
+```
+
+## Doublet Identification and Removal
+
+New we are testing for doublets present in our data. We do this using the scDBLFinder to calculate the singlets and doublets instead of seurats inbuilt finder because it is scientifically more robust.
+
+###### Dependancies
+
+```{r}
+#Loading the dependencies
+library(SingleCellExperiment)
+library(scDblFinder)
+```
+
+###### Run scDblFinder
+
+After, need to pull the normalised data out of the seurat object
+
+```{r}
+sce <- as.SingleCellExperiment(ALS_Seurat, assay = "RNA")
+```
+
+Using the normalised data we run the scDblFinder
+
+```{r}
+sce <- scDblFinder(sce, verbose = FALSE)
+```
+
+Now we need to put the information from scDblFinder into the the ALS_Seurat object again.
+
+```{r}
+ALS_Seurat$scDblFinder.class <- sce$scDblFinder.class
+ALS_Seurat$scDblFinder.score <- sce$scDblFinder.score
+```
+
+###### Filtering out the doublets from the data
+
+In this workflow filtering out the doublets to see is that changes the clustering.
+
+```{r}
+ALS_Seurat <- subset(ALS_Seurat, subset = scDblFinder.class == "singlet")
+unique(ALS_Seurat$scDblFinder.class)
+```
+
+## Cell Cycle Calculations
+
+This is done using the CellCycleScoring function in the Seurat package.
+
+```{r}
+s.features <- cc.genes$s.genes # Defining the features needed by Seurat
+g2m.features <- cc.genes$g2m.genes
+
+ALS_Seurat <- CellCycleScoring(ALS_Seurat, s.features = s.features, g2m.features = g2m.features, set.ident = TRUE) #Command to use the cell cycle scoring
+```
+
+## Integration Workflow
+
+##### Splitting Layers
+
+Next, to split the raw layers based on the batch column. From batch's 1-5.
+
+```{r}
+ALS_Seurat[["RNA"]] <- split(ALS_Seurat[["RNA"]], f = ALS_Seurat$Sequencing_batch)
+```
+
+##### Normalise Individual Batches
+
+Next, is to normalise each of the batches individually
+
+```{r}
+ALS_Seurat <- SCTransform(ALS_Seurat, vars.to.regress = c("S.Score", "G2M.Score"), vst.flavor = "v2", variable.features.n = 4000, verbose = F)
+```
+
+##### PCA on Individual Batches
+
+Next, is to run the PCA on the split, normalised data.
+
+```{r}
+ALS_Seurat <- RunPCA(ALS_Seurat, verbose = FALSE, npcs = 50)
+```
+
+##### Integrate Using CAAIntegration
+
+Canonical Correlation Analysis Integration Next, is to integrate/fuse the layers back together using the CCA
+
+```{r}
+ALS_Seurat <- IntegrateLayers(object = ALS_Seurat, method = CCAIntegration, orig.reduction = "pca", new.reduction = "integrated.cca", normalization.method = "SCT", verbose = FALSE, k.weight = 55)
+```
+
+##### Integrate Using HarmonyIntegration
+
+Next, will do the same but using the harmony integration algorithm.
+
+```{r}
+#library(SeuratWrappers) #Sometimes needed for HarmonyIntegration
+
+ALS_Seurat <- IntegrateLayers(object = ALS_Seurat, method = HarmonyIntegration, orig.reduction = "pca",normalization.method = "SCT", new.reduction = "integrated.harmony", verbose = FALSE)  #
+```
+
+##### Clustering after integration (Neighbors+Clusters)
+
+Running the findneighbors and findclusters functions again after the normalisation and integration process.
+
+```{r}
+ALS_Seurat <- FindNeighbors(ALS_Seurat, reduction = "integrated.cca", dims = 1:50, verbose = FALSE)
+
+ALS_Seurat <- FindClusters(ALS_Seurat, verbose = FALSE, resolution = 1.6)
+```
+
+### Generating the UMAP
+
+Next, is to generate the UMAP for both the CCA and Harmony.
+
+```{r}
+# Generate UMAP for CCA Integ
+ALS_Seurat <- RunUMAP(ALS_Seurat, reduction = "integrated.cca", dims = 1:50, reduction.name = "umap.cca")
+# Generate UMAP for Harmony Integ
+ALS_Seurat <- RunUMAP(ALS_Seurat, reduction = "integrated.harmony", dims = 1:50, reduction.name = "umap.harmony")
+```
+
+Next, is to plot the UMAPs themselves using the DimPlot function in Seurat.
+
+```{r}
+p1 <- DimPlot(ALS_Seurat, reduction = "umap.cca", group.by = "Sequencing_batch") + ggtitle("CCA Integration")
+p2 <- DimPlot(ALS_Seurat, reduction = "umap.harmony", group.by = "Sequencing_batch") + ggtitle("Harmony Integration")
+
+p1
+p2
+```
+
+## Investigating the Dimplots
+
+####Looking at seurat clusters
+
+```{r}
+DimPlot(ALS_Seurat, reduction = "umap.cca", group.by = "seurat_clusters", label = T)
+```
+
+##### Re-joining Split data
+
+The joining is done after splitting the data down into its batches.
+
+```{r}
+DefaultAssay(ALS_Seurat) <- "RNA" # Set to default to be able to join the layers back together. 
+ALS_Seurat <- JoinLayers(ALS_Seurat) #Joins the split layers
+```
+
+##### Preliminary gene markers
+
+Current genes chosen as gene markers Change based on the featureplots produced
+
+```{r}
+Progenitor <- c("SOX2","TOP2A","NOTCH3","NOTCH1","HES1","GMNN","BIRC5","CENPF","MCM2","PCNA","FOXA1", "EFCC1", "EFEMP1")
+MotorNeuron <- c("ISL1","ISL2","MNX1","CHAT","SLC5A7","SLC18A3","ALDH1A2")
+InterNeuron <- c("SLC17A6","GAD1","VSX2","SLC32A1","SOX14")
+Neurons <- c("STMN2","SNAP25","DCX","SST")
+```
+
+##### Progenitors
+
+```{r}
+FeaturePlot(ALS_Seurat, features=Progenitor, reduction = "umap.cca")
+VlnPlot(ALS_Seurat, features = Progenitor, layer = "counts", log = TRUE)
+```
+
+These are the ones identified by the findmarkers genes. Specifically looking at seurat cluster two. From below looking them up the good ones are: "FoxA1", "EFCC1", "EFEMP1"
+
+```{r}
+FeaturePlot(ALS_Seurat, features=c("GASK1B","TMEM190","FOXA1","GPX8","EFCC1","LAMB2","COL2A1","EFEMP1"), reduction = "umap.cca")
+```
+
+##### MotorNeurons
+
+Inspecting the feature plots of the neurons
+
+```{r}
+FeaturePlot(ALS_Seurat, features=MotorNeuron, reduction = "umap.cca")
+```
+
+##### InterNeurons
+
+```{r}
+FeaturePlot(ALS_Seurat, features=InterNeuron, reduction = "umap.cca")
+```
+
+##### Neurons
+
+From cellmarker2.0 Dropped: "MAP2" "SYT1" "RBFOX2" "Fos"?
+
+```{r}
+#FeaturePlot(ALS_Seurat, features=c("STMN2","SNAP25","DCX","SST"), reduction = "umap.cca")
+FeaturePlot(ALS_Seurat, features=Neurons, reduction = "umap.cca")
+```
+
+## AddModuleScore
+
+##### The labels
+
+The labels were chosen based on the feature plots above. Choosing genes which are related to each type of neuron and express clearly in our dataset.
+
+Progenitors: c("SOX2","SOX3","TOP2A","NOTCH1","NOTCH3", "GMNN")+(BIRC5","CENPF","MCM2","PCNA") MotorNeurons: c("ISL1","ISL2","MNX1","CHAT","SLC5A7","SLC18A3") InterNeurons: c("SLC17A6","GAD1","VSX2",SLC32A1","SOX14") (Removed:"SIM1","GAD2") Neurons: c("STMN2","SNAP25","DCX","SST")
+
+####Addmodule Score
+
+```{r}
+#Running the Seurat AddModuleScore function
+ALS_Seurat <- AddModuleScore(ALS_Seurat, list(Progenitor,MotorNeuron,InterNeuron,Neurons), name = "CellScores_", seed = 25115470,assay = "SCT") 
+#assay = "SCT",  assay = "RNA"
+```
+
+###### Renaming AddModule Columns
+
+Inspecting the metadata after adding the module scores. Renaming the column names for clarity.
+
+```{r}
+head(ALS_Seurat@meta.data[, c("CellScores_1", "CellScores_2", "CellScores_3", "CellScores_4")])
+tail(colnames(ALS_Seurat@meta.data))
+ALS_Seurat@meta.data
+Layers(ALS_Seurat)
+```
+
+Renaming the columns of the metadata
+
+```{r}
+#Renaming Using the dyplr package. Sometimes this does not work
+#ALS_Seurat@meta.data <- ALS_Seurat@meta.data %>% rename(Progenitor_Score = CellScores_1,MotorNeuron_Score = CellScores_2,InterNeuron_Score = CellScores_3)
+
+
+#Renaming using Base R
+colnames(ALS_Seurat@meta.data)[colnames(ALS_Seurat@meta.data) == "CellScores_1"] <- "Progenitor_Score"
+colnames(ALS_Seurat@meta.data)[colnames(ALS_Seurat@meta.data) == "CellScores_2"] <- "MotorNeuron_Score"
+colnames(ALS_Seurat@meta.data)[colnames(ALS_Seurat@meta.data) == "CellScores_3"] <- "InterNeuron_Score"
+colnames(ALS_Seurat@meta.data)[colnames(ALS_Seurat@meta.data) == "CellScores_4"] <- "Neuron_Score"
+
+
+head(rownames(ALS_Seurat@meta.data)) #Not sure if dpylr will work or change the format so double check.
+```
+
+Checking the renames seurat object
+
+```{r}
+head(ALS_Seurat@meta.data[,  c("Progenitor_Score","MotorNeuron_Score","InterNeuron_Score", "Neuron_Score")])
+```
+
+## Feature Plot of Cell Classifications
+
+Generating the feature plot of the classifications made using the add module score.
+
+```{r}
+FeaturePlot(ALS_Seurat, reduction = "umap.cca", c("Progenitor_Score","MotorNeuron_Score","InterNeuron_Score", "Neuron_Score"), min.cutoff = 0)
+#Add the min.cutoff argument to create a baseline for the results and have no negative numbers. 
+```
+
+### Clusting UMAPS
+
+Interested to see how these shape out
+
+```{r}
+DimPlot(ALS_Seurat, group.by = "seurat_clusters", label = T)
+DimPlot(ALS_Seurat, group.by = "Phase", label = T)
+head(ALS_Seurat)
+```
+
+### Save
+
+Saving the final RDS file which has filtered for singlets and used the right normalised
+
+```{r}
+saveRDS(ALS_Seurat, file = "Results/ALS_Seurat_Analysis/MT_Rem_WrkFlw/ALS_Seurat_NewFilMT.rds") #Path/to/file
+```
+
+##### Reset Object (Pre-Clustering)
+
+This line of code is used to reset the ALS-Seurat object for the Kmeans calculations below. Important for removing the need to do everythgin again everytime and to reset the object when something has gone wrong.
+
+```{r}
+# Load the data into the ALS_Seurat object
+ALS_Seurat <- readRDS("/scratch/prj/dn_hamidlab_msc_proj/k25115470/Results/ALS_Seurat_Analysis/MT_Rem_WrkFlw/ALS_Seurat_NewFilMT.rds") 
+#Path/to/file
+```
+
+## Preparing SCT split datav
+
+Preparing the data during this function in order to try and do the means clustering. This is done using the prepSCTFindMarkers.
+
+```{r}
+ALS_Seurat <- PrepSCTFindMarkers(ALS_Seurat)
+```
+
+##Kmeans
+
+##### Kmeans Seurat_Cluster Groupings
+
+This is about calculating the mean add module score for each of the clusters made in Seurat clusters 0-10. This will being using the aggregate R function.
+
+```{r}
+#First need to set the seed
+set.seed(25115470)
+
+#Pulling out the information
+mean_clus_score <- ALS_Seurat@meta.data[,  c("seurat_clusters","Progenitor_Score","MotorNeuron_Score","InterNeuron_Score", "Neuron_Score")]
+
+# Aggregating the means for each of the seurat clusters
+mean_clus <- aggregate(mean_clus_score, by=list(ALS_Seurat@meta.data[,"seurat_clusters"]), FUN = "mean",simplify = TRUE, drop = TRUE)
+mean_clus <- mean_clus %>% select(-c("seurat_clusters"))
+mean_clus <- mean_clus %>% dplyr::rename(seurat_cluster = Group.1, Progenitor_Score_mean = Progenitor_Score, MotorNeuron_Score_mean = MotorNeuron_Score, InterNeuron_Score_mean = InterNeuron_Score, Neuron_Score_mean = Neuron_Score)
+
+#Can we use this to calculate and generate a kmeans
+mean_scores <- mean_clus[c("Progenitor_Score_mean","MotorNeuron_Score_mean","InterNeuron_Score_mean")]
+km_means <- kmeans(mean_scores, centers = 3, nstart = 25)
+head(ALS_Seurat)
+
+#Adding the new kmeans_labels into seurat
+names(km_means$cluster) <- 0:10
+ALS_Seurat$kmeans_label <- as.vector(km_means$cluster[ALS_Seurat$seurat_clusters])
+names
+
+#Plotting out the results
+DimPlot(ALS_Seurat, reduction = "umap.cca",group.by = "kmeans_label", label = TRUE)
+```
+
+##### K-means Individual Clustering
+
+Looking at how kmeans would label all of the different cells
+
+```{r eval=FALSE}
+#First need to set the seed
+set.seed(25115470)
+
+#Taking out the module scores from the seurat metadata
+#scores <- ALS_Seurat@meta.data[, c("Progenitor_Score", "MotorNeuron_Score", "InterNeuron_Score")]
+
+#Performing Kmeans on the scores data and into 3 of the different groups
+#k_res <- kmeans(scores, centers = 3, nstart = 25)
+
+#Adding back into Seurat object
+#ALS_Seurat$kmeans_label <- as.factor(k_res$cluster)
+
+#Plotting out the UMAPs of the kmeans clustering
+#DimPlot(ALS_Seurat, reduction = "umap.cca",group.by = "kmeans_label", label = TRUE)
+```
+
+When looking at the current version of the k-means clustering labels, it is giving a good motor neuron (3), but it has not identified the correct lower section of the progenitor cluster. Look to try and change the way those cells are clustered.
+
+## Labelling Clusters (K-means Based)
+
+This is the automated process of labelling because the clustering by K-means of the mean values has identified the 3 groupings well.\
+Labelling workflow from Seurat's website was followed - [link](https://satijalab.org/seurat/articles/pbmc3k_tutorial.html#run-non-linear-dimensional-reduction-umaptsne)
+
+If interested in the background information, click this [link](https://www.cd-genomics.com/resource-how-annotate-clusters-seurat.html#:~:text=Manual%20Annotation,Allows%20expert%20interpretation%20and%20refinement.)
+
+```{r}
+#Assigning in the right order from 0-10 the Seurat cluster classification
+Idents(ALS_Seurat) <- "seurat_clusters"
+#new.indents<- c("InterNeuron","Progenitor","MotorNeuron") 
+new.indents <- c("InterNeuron","Progenitor","Progenitor","MotorNeuron","InterNeuron","MotorNeuron","MotorNeuron","MotorNeuron","MotorNeuron","InterNeuron","InterNeuron") 
+names(new.indents) <- levels(ALS_Seurat)
+levels(ALS_Seurat)
+new.indents
+```
+
+Now using the created vector and adding that into the ALS_Seurat object
+
+```{r}
+print(levels(ALS_Seurat))
+print(names(new.indents))
+ALS_Seurat <- RenameIdents(ALS_Seurat, new.indents)
+ALS_Seurat$cell_group <- Idents(ALS_Seurat)
+
+head(ALS_Seurat)
+DimPlot(ALS_Seurat, reduction = "umap.cca",group.by = "cell_group", label = TRUE)
+
+ggsave(plot = last_plot(), filename = "/scratch/prj/dn_hamidlab_msc_proj/k25115470/Results/ALS_Seurat_Analysis/MT_Rem_WrkFlw/Groupings_Means_Clusters.png", dpi = 300, height = 6, width = 9)
+```
+
+## Avg Counts Data
+
+### Cell groupings
+
+##### Summry of stats table
+
+```{r}
+summary_stats <- ALS_Seurat@meta.data %>% group_by(kmeans_label) %>% summarise(Cell_Count = n(),Percentage = (n() / nrow(ALS_Seurat@meta.data)) * 100)
+
+print(summary_stats)
+```
+
+#### Broken down by cell type numbers
+
+breakdown by the cell type (i.e. the mutation)
+
+```{r}
+count_table <- table(ALS_Seurat$kmeans_label, ALS_Seurat$genotype)
+print(count_table)
+class(count_table)
+```
+
+Changing the table into a matrix. Doing this in order to generate a stack bar plot looking at the 3 categories and the distributions of the
+
+```{r}
+mt_count_table <- as.data.frame.matrix(count_table)
+```
+
+Now want to bring together the matrix to only have a mutant and wild-type columns.
+
+```{r}
+Mutant_cols <- c("FUS_KO", "FUS_P525L_heterozygous", "FUS_P525L_homozygous", "FUS_R495X", "TARDBP_M337V")
+
+mt_count_table$Mutant_Total <- rowSums(mt_count_table[, Mutant_cols])
+```
+
+Putting the simplified information into a more simple table, which can be used to fo the counts data
+
+```{R}
+simple_count_table <- mt_count_table[, c("Control","Mutant_Total")]
+simple_count_table
+```
+
+### Cluster groupings
+
+Looking at the cell counts and their respective percentages based on the Seurat cluster.
+
+```{r}
+cluster_grouping_stats <- ALS_Seurat@meta.data %>% group_by(seurat_clusters) %>% summarise(Cell_Count = n(), percentage = (n() / nrow(ALS_Seurat@meta.data)) * 100)
+
+print(cluster_grouping_stats)
+class(cluster_grouping_stats)
+```
+
+Getting the table broken down into clusters and the counts for each genotype. Converting it into a matrix to manipulate the data yet.
+
+```{r}
+big_table <- table(ALS_Seurat$seurat_clusters,ALS_Seurat$genotype)
+mt_big_table <- as.data.frame.matrix(big_table)
+
+mt_big_table
+print(ALS_Seurat)
+```
+
+Now to simplify the final to have WildType and mutants together
+
+```{R}
+mt_big_table$Mutant_Total <- rowSums(mt_big_table[, Mutant_cols])
+```
+
+Simplify the dataframe to have only the mutant and wildtype as a part of the dataframe
+
+```{r}
+simp_mt_bigtable <- mt_big_table[,c("Control","Mutant_Total")]
+print(simp_mt_bigtable)
+
+sum(simp_mt_bigtable$Control) #347 - Control
+sum(simp_mt_bigtable$Mutant_Total) #919 - Mutants
+sum(simp_mt_bigtable$Control,simp_mt_bigtable$Mutant_Total) #1293 - Total
+```
+
+##### Simple normalisation
+
+Next is to normalise the data. This needs to be done before generating the visuals Need to divide the total by each of the individual clusters.
+
+```{r}
+simp_mt_bigtable #Contains the cell counts for each of the different clusters broken down into the control and the wildtype groups. 
+sum(simp_mt_bigtable$Control) #374 - Control
+sum(simp_mt_bigtable$Mutant_Total) #919 - Mutants
+
+simp_mt_bigtable[, 1:1] #Vector of the control counts
+simp_mt_bigtable[, 2:2] #Vector of the mutant counts
+
+simp_mt_bigtable$NormalisedControl <- simp_mt_bigtable[, 1] / sum(simp_mt_bigtable$Control)
+simp_mt_bigtable$NormalisedMutatnts <- simp_mt_bigtable[, 2:2] / sum(simp_mt_bigtable$Mutant_Total)
+
+simp_mt_bigtable
+```
+
+##### All mutation normalisation
+
+Working with the larger data set
+
+```{r}
+comp_big_table <- select(mt_big_table, -Control, -Mutant_Total)
+comp_big_table
+```
+
+Looking at the vectors of the different mutant columns in our data
+
+```{r}
+#Looking at each of the vectors associated with each of the mutations to make sure that they are correct. 
+comp_big_table[, 1] 
+comp_big_table[, 2]
+comp_big_table[, 3]
+comp_big_table[, 4]
+comp_big_table[, 5] 
+```
+
+Below using the apply function to automatically generate a table with the normalsed counts
+
+```{r}
+# Divides every value in columns 1-5 by the sum of its own column
+normalised_data_counts <- apply(comp_big_table[, 1:5], 2, function(x) x / sum(x, na.rm = TRUE))
+
+class(normalised_data_counts) # To understand what format the data is in
+normalised_data_counts
+
+# To add these back into your original table:
+comp_big_table[, 6:10] <- normalised_data_counts
+```
+
+Renaming the columns that have been added to make them easier to read and understand
+
+```{r}
+#comp_big_table <- rename(comp_big_table, Normalised_FUS_KO = V6) #Not sure why it won't work
+
+#Taking a more direct approach which depends on the position of the columns in the table. If these change then this code needs to also be changed.
+colnames(comp_big_table)[6] <- "Normalised_FUS_KO"
+colnames(comp_big_table)[7] <- "Normalised_FUS_P525L_heterozygous"
+colnames(comp_big_table)[8] <- "Normalised_FUS_P525L_homozygous"
+colnames(comp_big_table)[9] <- "Normalised_FUS_R495X"
+colnames(comp_big_table)[10] <- "Normalised_TARDBP_M337V"
+
+print(comp_big_table) #Printing out the final result to make sure that all of the columns have been renamed properly.
+```
+
+Adding the normalised control column into the big mutant table just created (comp_big_table)
+
+```{r}
+comp_big_table$Normalised_Control <- simp_mt_bigtable$NormalisedControl #normalised controls
+
+comp_big_table
+```
+
+####Grouped FUS mutations? Would it be worth looking at the mutations individually but when the FUS mutations have all be tied into one group?
+
+```{r}
+#Getting all the mutant information
+mt_big_table #Checking original table
+Fus_Grp_Table <- select(mt_big_table, -Control, -Mutant_Total) #Selecting just the needed information
+Fus_Grp_Table
+
+Fus_Grp_names <- c("FUS_KO","FUS_P525L_heterozygous","FUS_P525L_homozygous","FUS_R495X") 
+Fus_Grp_Table$Fus_Grp <- rowSums(Fus_Grp_Table[, Fus_Grp_names])
+
+Fus_Grp_Table <- select(Fus_Grp_Table, -Fus_Grp_names) #Removing the "detailed" FUS groupings
+
+Fus_Grp_Norm <- apply(Fus_Grp_Table[, 1:2], 2, function(x) x / sum(x, na.rm = TRUE))
+
+Fus_Grp_Norm <- as.data.frame.matrix(Fus_Grp_Norm)
+
+Fus_Grp_Norm$Normalised_Control <- simp_mt_bigtable$NormalisedControl
+
+Fus_Grp_Norm
+Fus_Grp_Table
+```
+
+### Stack Bar Plots
+
+Next is generating the stack bar plots.
+
+#### Simple Stack Bar Plot
+
+For this Stack Bar plot the "simple" data frame should be used. This is beucase it only contains the control and Mutant counts in them.
+
+```{r}
+library(tidyr)
+simp_mt_bigtable #Is the dataframe containing the information we need for the simple stacked bar plot
+
+#Going from wide to long
+
+plot_simp <- simp_mt_bigtable %>% mutate(ClusterID = as.factor(row_number())) %>% pivot_longer(cols = c(NormalisedControl, NormalisedMutatnts), names_to = "Condition", values_to = "NormalisedValue")
+plot_simp
+```
+
+The actual plot that we need to generate
+
+```{r}
+ggplot(plot_simp, aes(x = ClusterID, y = NormalisedValue, fill = Condition)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.5) +
+  theme_minimal() +
+  labs(title = "Stacked Bar Plot of Normalised Counts",x = "Experimental Condition",y = "Normalised Counts",fill = "Row ID") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  labs(title = "Control Vs Mutated (Normalised)", x = "Seurat Cluster", y = "Normalised Counts") +
+  theme(legend.position = "right") +
+  geom_hline(yintercept = c(0.4, 0.6), linetype = "dashed")
+```
+
+#### Complex Stack Bar Plot
+
+Can do this using the information in the comp_big_table data.frame, as it contains all of the normalised information for each of individual mutation types.
+
+```{r}
+plot_comp <- comp_big_table %>% mutate(ClusterID = as.factor(row_number())) %>% pivot_longer(cols = starts_with("Normalised"), names_to = "Condition", values_to = "Value")
+
+print(plot_comp)
+print(comp_big_table)
+```
+
+Generate the stack bar plot with the same theme as before.
+
+```{r}
+ggplot(plot_comp, aes(x = ClusterID, y = Value, fill = Condition)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.5, color = "white", linewidth = 0.1) +
+  scale_fill_brewer(palette = "Set2") + 
+  theme_minimal() +
+  labs(title = "Normalised Control Vs Mutants", x = "Seurat Cluster", y = "Normalised counts") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) #Easier to read
+```
+
+#### FUS grouped Stack Bar plot
+
+Doing the same stack bar plot but for the grouped fus mutations
+
+```{r}
+plot_Fus <- Fus_Grp_Norm %>% mutate(ClusterID = as.factor(row_number())) %>% pivot_longer(cols = -ClusterID, names_to = "Condition", values_to = "Proportion") #%>% mutate(Condition = factor(Condition, levels = c("Normalised_Control", "Fus_Grp", "TARDBP_M337V")))
+
+plot_Fus
+```
+
+Now plotting the stacked bar plot
+
+```{r}
+ggplot(plot_Fus, aes(x = ClusterID, y = Proportion, fill = Condition)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.5, color = "white", linewidth = 0.2) +
+  scale_fill_brewer(palette = "Set2") + 
+  theme_minimal() +
+  labs(title = "Grouped FUS vs. Controls (Normalised)", x = "Seurat Cluster", y = "Normalised Counts") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Proportion Statistics
+
+###Fishers Test (Control Vs Mutant)
+
+```{r}
+#ceiling((347/(347+919)) * 79)
+```
+
+Generating the information table
+
+```{r}
+#simp_mt_bigtable
+
+#Fish_Clus_8 <- simp_mt_bigtable[9, "Control"], simp_mt_bigtable[9, "Mutant_Total"]
+
+#simp_mt_bigtable[9, "Mutant_Total"]
+#simp_mt_bigtable[9, "Control"]
+#Fish_Clus_8
+```
+
+##### Cluster matrix
+
+Generating a matrix with all the necessary information for each cluster to be able to use the apply function.
+
+```{r}
+simp_mt_bigtable #Contains all the observations and can used to calculate totals
+
+fish_simp_df <- select(simp_mt_bigtable,c(-NormalisedControl,-NormalisedMutatnts)) #%>% add_row(Control= sum(simp_mt_bigtable$Control), Mutant_Total = sum(simp_mt_bigtable$Mutant_Total))
+
+#Removing the normalised values
+#Adding the totals for control and mutants
+
+Control_ratio <- sum(simp_mt_bigtable$Control) / sum(simp_mt_bigtable$Control, simp_mt_bigtable$Mutant_Total)
+Mutant_ratio <- sum(simp_mt_bigtable$Mutant_Total) / sum(simp_mt_bigtable$Control, simp_mt_bigtable$Mutant_Total)
+
+#For the Controls
+fish_simp_df$Control_Expected <- round(Control_ratio * (fish_simp_df$Control + fish_simp_df$Mutant_Total))
+
+#For the mutants
+fish_simp_df$Mutant_Expected <- round(Mutant_ratio * (fish_simp_df$Control + fish_simp_df$Mutant_Total))
+
+
+#apply(fish_simp_df, 1, FUN = ceiling((sum(simp_mt_bigtable$Control)/sum(simp_mt_bigtable$Control, simp_mt_bigtable$Mutant_Total)) * as.numeric(sum())))
+#sum(fish_simp_df$Control[i] + fish_simp_df$Mutant_Total[i])
+
+fish_simp_df
+```
+
+##### Hypothesis Statement
+Using Fishers because there are counts for some of teh clusters which are <5, warranting the use of the exact test. (Clutser 8)
+
+For the fishers test there is a hypothesis that is being tested. Hypothesis for the test: 
+
+* H~0~: There's no difference in proportion between Control and Mutants in each cluster.
+
+* H~A~: There is a difference in proportion between control and mutants in each cluster.
+
+$\alpha$-level: 0.05 The calculation is an example of a two-tailed alternative hypothesis calculation.
+
+```{r}
+fish_simp_df #Final data frame with control, mutant, and both expected
+
+fisher_results <- apply(fish_simp_df[, c("Control", "Mutant_Total", "Control_Expected", "Mutant_Expected")], 1, function(row) {
+  
+twoby <- matrix(c(row["Control"], row["Mutant_Total"], row["Control_Expected"],row["Mutant_Expected"]),nrow = 2, byrow = TRUE) #The individual 2x2 matrix for each of the fishers tests
+  
+resulting <- fisher.test(round(twoby)) #Fishers with rounded values
+  
+# Return a vector of the metrics I care about
+return(c(p_value = resulting$p.value, odds_ratio = resulting$estimate))
+})
+```
+
+```{R}
+#Cleaning up the results
+Fish_Final_Res <- as.data.frame(t(fisher_results))
+Fish_Final_Res$Cluster <- 0:10
+Fish_Final_Res$adj_p <- p.adjust(Fish_Final_Res$p_value, method = "BH")
+
+Fish_Final_Res
+```
+Double checking the tables to make sure I made them correctly. 
+```{r}
+Fish_Final_Res
+```
+#####Adding P-values the Stacked bar plot
+The labelled data
+```{r}
+#Taking the P-values and putting them into a data frame
+Fish_Stack_labels <- round(Fish_Final_Res$adj_p, 3)
+Fish_Stack_labels
+
+#Want to use these in the plot, as the labels. 
+#These are currently in vector form to be used for each of the cluster types. They are also in order of clusters 0:10. 
+#Due to the difference in length (11 Vs 22) going to use a different approach to labeling that is not a straight addition.
+
+Fish_label_df <- data.frame(Seurat_ClusterID = 0:10, P_Val = as.numeric(Fish_Stack_labels))
+# Ensures this is numeric
+
+Fish_label_df$label_color <- ifelse(Fish_label_df$P_Val < 0.05, "red", "black") #Adding some colour indications to the numbers
+
+Fish_label_df
+```
+
+The plot
+Fix labelling issue in plot after
+```{r}
+plot_simp_Pval <- plot_simp
+plot_simp_Pval$ClusterID <- factor(plot_simp_Pval$ClusterID, levels = 0:10)
+```
+
+```{R}
+ggplot(plot_simp_Pval, aes(x = ClusterID, y = NormalisedValue, fill = Condition)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.5) +
+  geom_text(data = Fish_label_df, aes(x = Seurat_ClusterID, label = formatC(P_Val, format = "g", digits = 2), colour = label_color), 
+    y = 1.02,            # Lowered slightly; 1.09 is very high if the scale is tight
+    inherit.aes = FALSE, # Prevents confusion
+    size = 4,            # Size of the text
+    fontface = "bold",   # Make the text bold (Easier to read?)
+    angle = 45,          # Angle of the labeling
+    hjust = 0,           # Horizontal adjustment 
+    vjust = 0            # Vertical adjustment
+  ) +
+  scale_colour_identity() + # To use the labels i have it in the dataframe 
+  theme_minimal() +         # Chose the minimal theme  
+  scale_fill_brewer(palette = "Set2") + # The colour of the bars
+  
+  # Ensure the Y axis goes from 0 to 1 and then expands for labels
+  # limits = c(0, 1) ensures the bars always touch the top/bottom correctly
+  scale_y_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.3))) + 
+  
+  labs(title = "Proportional Composition by Cluster", x = "Seurat Cluster", y = "Proportion of Cells") +
+  geom_hline(yintercept = c(0.4, 0.6), linetype = "dashed", alpha = 0.5) +
+  
+  # coord_cartesian(clip = "off") is the "safety net" that lets labels exist outside the plot area
+  coord_cartesian(clip = "off") +
+  theme(legend.position = "right")
+```
+
+
+```{r}
+ggplot(plot_simp, aes(x = ClusterID, y = NormalisedValue, fill = Condition)) +
+geom_bar(stat = "identity", position = "fill", width = 0.5) +
+  
+  # The Angled & Color-Coded Labels
+  geom_text(data = Fish_label_df, aes(x = Seurat_ClusterID, label = formatC(P_Val, format = "g", digits = 2),colour = label_color), 
+    y = 1.09, #Positioning numbers above the bar
+    inherit.aes = FALSE, #Prevents confusion
+    size = 4,            #Size of the text
+    fontface = "bold",   #Make the text bold (Easier to read?)
+    angle = 45,          #Angle of the labeling
+    hjust = 0,           #Align the start of the text to the bar center
+    vjust = 0.5            #Controls the vertical justification
+  ) +
+  scale_colour_identity() + #To use the labels i have it in the dataframe 
+  theme_minimal() +         #Chose the minimal theme  
+  scale_fill_brewer(palette = "Set2") + #The colour of the bars
+  labs(title = "Proportional Composition by Cluster", x = "Seurat Cluster", y = "Proportion of Cells") +
+  geom_hline(yintercept = c(0.4, 0.6), linetype = "dashed", alpha = 0.5) +
+  
+  # Making more space at the top of the graph to make the labels fit
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  coord_cartesian(clip = "off") +
+  theme(legend.position = "right")
+```
+```{r}
+plot_simp
+```
+
+
+```{r}
+ggplot(plot_simp, aes(x = ClusterID, y = NormalisedValue, fill = Condition)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.5) + 
+  theme_minimal() +
+  labs(title = "Stacked Bar Plot of Normalised Counts",x = "Experimental Condition",y = "Normalised Counts",fill = "Row ID") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  labs(title = "Control Vs Mutated (Normalised)", x = "Seurat Cluster", y = "Normalised Counts") +
+  theme(legend.position = "right") +
+  geom_hline(yintercept = c(0.4, 0.6), linetype = "dashed")
+```
+
+
+
+
+### Chi^2^ Test (Control Vs Fus Vs TARDBP_377V)
