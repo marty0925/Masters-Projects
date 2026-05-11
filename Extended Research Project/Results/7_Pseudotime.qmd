@@ -1,0 +1,353 @@
+---
+title: "7_Pseudotime"
+format: html
+editor: visual
+---
+
+## Setting path to Libraries
+
+Setting the packages' path
+
+```{r}
+.libPaths("/scratch/prj/dn_hamidlab_msc_proj/Libraries") #HPC path to libraries used
+```
+
+Loading the Older version of ggplot2 which is fully compatible with the latest version of Seurat.
+
+##### ggplot2 dependency issue fix
+
+(09/02/26) Currently, the Seurat package is not fully compatible with the latest version of ggplot2 (v4.0.0). To get around this, I download an older version into the Libraries folder, which I can then load into the R script when needed. (This should help with the VlnPlot problem.)
+
+```{r}
+Old_ggplot_Path <- "/scratch/prj/dn_hamidlab_msc_proj/Libraries/ggplot2_3.5.2_Old/" #Ensure path above is right for machine.
+
+#Comment back in if needed
+# remotes::install_version( "ggplot2", version = "3.5.2", lib = Old_ggplot_Path, repos = "http://cran.us.r-project.org")
+```
+
+Next is to load the older version of ggplot2.
+
+```{r}
+library(ggplot2, lib.loc = Old_ggplot_Path) #v3.5.2
+```
+
+##Loading Dependancies
+
+```{r}
+library(slingshot) #v2.10.0
+library(Seurat) #v5.4.0
+library(grDevices) #4.3.0
+library(RColorBrewer) #1.1-3
+```
+
+
+#### Loading in latest Seurat object
+
+Loading the "ALS_Seurat" object made previously. (Change the file location of the object depending on where it is found in the environment.)
+
+```{r}
+# Load the data into the ALS_Seurat object
+#This is the file result from "WrkFlw_Filter_MT_Seurat.qmd" and is before the integration sets.
+
+ALS_Seurat <- readRDS("Results/ALS_Seurat_Analysis/DiffExpression_Analysis/ALS_Seurat_Differential_Expression.rds")
+```
+
+Inspect the object to make sure the correct version is loaded
+
+```{r}
+head(ALS_Seurat)
+#Should be the counts data
+```
+
+##What is Pseudotime?
+
+The use of single-cell RNA seq data to computationally place cells along a pseudotemporal trajectory, based on their progressively changing transcriptome. This enables the investigation of how the gene expression dynamically changes through development and how the current mutations can confer this mutation. It is key to understanding biological systems with temporal dynamics, such as ALS.
+
+###What package?
+
+To perform the analysis, the package "slingshot" will be used. [link](https://link.springer.com/article/10.1186/s12864-018-4772-0)
+
+This is available as part of the Bioconductor group of packages.
+
+To calculate the trajectory of the cells we use the "" function in the slingshot package. This function requires two main inputs.
+
+The first and minimum is a matrix of the cells in a reduced-dimensional space. In this project this will be a matrix of the "integrated.cca" reduction.
+
+The second input is a vector of cluster labels for the cells. The second input can be left blank but it means that slingshot will treat all the cells as a part of the same cluster.
+
+## Slingshot Analysis
+
+### Investigating Reductions
+
+Looking at the ALS_Seuart object to identify the different options there are for
+
+```{r}
+ALS_Seurat@meta.data
+Reductions(ALS_Seurat) #Gives the reductions in the latest ALS_Seurat object
+
+#For this analysis plan to use the "integrated.cca" reduction. 
+DimPlot(ALS_Seurat, reduction = "umap.harmony", group.by = "seurat_clusters", label = T) + ggtitle("Harmony Integration")
+DimPlot(ALS_Seurat, reduction = "umap.cca", group.by = "cell_group") + ggtitle("CCA Integration")
+DimPlot(ALS_Seurat, reduction = "umap.cca", group.by = "seurat_clusters", label = T) + ggtitle("CCA Integration")
+```
+
+###Extracting reduction
+
+```{r}
+cca_matrix <- Embeddings(ALS_Seurat, reduction = "integrated.cca")
+head(cca_matrix, 2) #For all 50 integration
+```
+
+###Vector of grouping (slingshot)
+
+```{r}
+# Extracting cell labels 
+cell_labels_sling <- ALS_Seurat$cell_group
+```
+
+###Slingshot Code This is the code used to calculate the slingshot trajectory analysis.
+
+```{r}
+Sling_Res_CCA <- slingshot(cca_matrix, reducedDim = 'CCA', clusterLabels = cell_labels_sling, start.clus = 'Progenitor')
+
+head(Sling_Res_CCA@assays)
+summary(Sling_Res_CCA@metadata)
+```
+
+#### Visualisation
+
+This is the visualisation of the trajectory analysis that we just performed using the CCA integrated data set clustered into our 3 groupings.
+
+```{r}
+plot(SlingshotDataSet(Sling_Res_CCA), type = 'b')
+```
+
+```{r}
+pt_values <- slingPseudotime(Sling_Res_CCA)[, 1] #Extracting the pseudo time values
+pt_values
+
+colors <- colorRampPalette(brewer.pal(11, 'Spectral')[-6])(100) #Custom color palette
+plotcol <- colors[cut(pt_values, breaks=100)]
+
+plot(cca_matrix[, 1:2], col = plotcol, pch = 16, asp = 1,
+     main = "Slingshot Pseudotime (Harmony Integration)", 
+     xlab = "CCA_1", ylab = "CCA_2") #Plotting the cca_matrix object
+
+lines(SlingshotDataSet(Sling_Res_CCA), lwd = 3, col = 'black') # Trajectory line
+```
+
+###Slack Code Slingshot lineage and Pseudotime. 
+
+Starting with 10 clusters initially
+
+```{r}
+# load data
+unique(ALS_Seurat$cell_group) #Using this R object
+
+#Use your CCA embedding and determine the starting cluster for the pseudotime
+
+ALS.Sling.cca.2 <- slingshot(Embeddings(ALS_Seurat, "umap.cca"), #Choosing the embeddings
+                         clusterLabels = ALS_Seurat$seurat_clusters, #Identifying the clusters labels
+                         start.clus = "2",
+                         end.clus = c("4","6")) #Indicating the starting cluster (progen -> other 2 lineages)
+
+#Check number of lineages
+slingLineages(ALS.Sling.cca.2) #Prediction: should be 2
+
+pt.cca <- slingPseudotime(ALS.Sling.cca.2)
+
+#Adding the appropriate column names
+colnames(pt.cca) <- paste0("pseudotime_startProgen_lin", seq_len(ncol(pt.cca)))
+
+ALS_Seurat <- AddMetaData(ALS_Seurat, metadata = pt.cca)
+```
+
+Using a phate integration instead of the CCA previously, as it looks at the data as a global continuous structures. 
+This will draw a continuous and connected shape based on the shared lineage. 
+
+```{r}
+ALS_Seurat %>% saveRDS(file = "/cephfs/volumes/hpc_data_prj/dn_hamidlab_msc_proj/ada97657-79ef-4573-bd29-4e8ab8a70de0/k25115470/Outputs/PHATE_Reduction/integrated_cca.rds")
+```
+
+
+```{R}
+# ------------------------------ PHATE with SCT ------------------------------ #
+
+#F: You can try out PHATE, but it's a python implementation
+# every new R session
+#Sys.unsetenv("RETICULATE_PYTHON")
+
+#library(reticulate)
+#use_python("/media/cdn-bc/RAID/miniconda/envs/PHATE/bin/python", required = TRUE)
+#py_config()
+#reticulate::import("pyexpat")
+#reticulate::import("phate")
+
+#library(phateR)
+
+# run
+#seurat_PHATE <- phate(Embeddings(integration_obj, "integrated.rpca"))
+
+ALS_Seurat_PHATE <- readRDS(file = "/cephfs/volumes/hpc_data_prj/dn_hamidlab_msc_proj/ada97657-79ef-4573-bd29-4e8ab8a70de0/k25115470/Outputs/PHATE_Reduction/integrated_cca_phate.rds")
+
+ALS.Sling.phate.2 <- slingshot(Embeddings(ALS_Seurat_PHATE, "phate"), #Choosing the embeddings
+                         clusterLabels = ALS_Seurat_PHATE$seurat_clusters, #Identifying the clusters labels
+                         start.clus = "2",
+                         end.clus = c("4","6"))
+
+#Check number of lineages
+slingLineages(ALS.Sling.phate.2) #Prediction: there are a total of 4 lineages
+
+pt.phate <- slingPseudotime(ALS.Sling.phate.2)
+
+#Adding the appropriate column names
+colnames(pt.phate) <- paste0("pseudotime_start2fin4n6_lin", seq_len(ncol(pt.phate)))
+
+ALS_Seurat <- AddMetaData(ALS_Seurat, metadata = pt.phate)
+
+head(ALS_Seurat_PHATE)
+```
+
+Checking the visualisations
+```{r}
+DimPlot(ALS_Seurat_PHATE, reduction = "phate", group.by = "Simp_GnC_comb", label = T) + ggtitle("PHATE Integration")
+DimPlot(ALS_Seurat_PHATE, reduction = "phate", group.by = "seurat_clusters", label = T) + ggtitle("PHATE Integration")
+
+```
+
+```{r}
+###########################################
+# ------------- Pseudorank  ------------- # 
+###########################################
+
+# pseudotime to pseudorank
+pr <- apply(pt.phate, 2, function(x) rank(x, na.last = "keep") / sum(!is.na(x)))
+colnames(pr) <- paste0("pseudorank_start2fin4n6_lin", seq_len(ncol(pr)))
+
+pr
+```
+
+```{r}
+########################################################################################
+# --------- TradeSeq lineages  starting with clust 10 - RNA sub-setting -------------- # 
+########################################################################################
+library(qs2) #v0.2.1
+library(tradeSeq) #v1.16.0
+
+cw <- slingCurveWeights(sds.rpca.10)
+
+# tradeSeq
+counts <- GetAssayData(integration_obj.f, assay = "RNA", layer = "counts")
+keep <- Matrix::rowSums(counts > 0) >= 10
+counts <- counts[keep, ]
+
+BPPARAM <- BiocParallel::bpparam()
+BPPARAM$workers <- 10
+
+sce <- fitGAM(
+  counts = counts,
+  pseudotime = pr,
+  cellWeights = cw,
+  nknots = 6, 
+  verbose = FALSE, 
+  parallel=TRUE, 
+  BPPARAM = BPPARAM
+)
+
+# Association test [Perform statistical test to check whether gene expression is constant across pseudotime within a lineage]
+# This test assesses whether average gene expression is associated with pseudotime.
+# A matrix with the wald statistic, the degrees of freedom and the (unadjusted) p-value associated with each gene for all the tests performed. If the testing procedure was unsuccessful for a particular gene, NA values will be returned for that gene.
+assocRes <- associationTest(sce)
+# If TRUE, test for all lineages independently.
+assocResLin <- associationTest(sce,lineages = TRUE)
+
+# Start vs end test [Perform statistical test to check for DE between starting point and the end stages of every lineage]
+# This function assesses differential expression between the average expression of the start and end points of a lineage.
+# A matrix with the wald statistic, the number of df and the p-value associated with each gene for all the tests performed. Also, for each possible pairwise comparision, the observed log fold changes. If the testing procedure was unsuccessful, the procedure will return NA test statistics, fold changes and p-values.
+startRes <- startVsEndTest(sce)
+# If TRUE, test for all lineages independently.
+startResLin <- startVsEndTest(sce,lineages = TRUE)
+
+# Difference end test [Perform statistical test to check for DE between final stages of every lineage]
+# Assess differential expression between the average expression at the end points of lineages of a trajectory.
+endRes <- diffEndTest(sce)
+# If TRUE, test for all pairwise comparisons independently.
+endResLin <- diffEndTest(sce,pairwise = TRUE) 
+
+# Pattern end test [Assess differential expression pattern between lineages]
+patternRes <- patternTest(sce)
+# If TRUE, test for all pairwise comparisons, between lineages.
+patternResLin <- patternTest(sce,pairwise = TRUE)
+
+# Early DE test [Perform test of early differences between lineages]
+# Perform test of differential expression patterns between lineages in a user-defined region based on the knots of the smoothers.
+earlyDERes <- earlyDETest(sce, knots = c(1, 2))
+#   If TRUE, test for all pairwise comparisons independently.
+earlyDEResLin <- earlyDETest(sce, knots = c(1, 2),pairwise = TRUE)
+```
+
+```{r}
+### Running lineages loop ####
+
+library(BiocParallel)
+
+BPPARAM <- BiocParallel::MulticoreParam(workers = 10)
+
+lineage_names <- colnames(pr)
+
+sce_list <- bplapply(seq_len(ncol(pr_all)), function(i) {
+  
+  message("Fitting ", lineage_names[i])
+  
+  pr_i <- as.matrix(pr[, i, drop = FALSE])
+  cw_i <- as.matrix(cw[, i, drop = FALSE])
+  
+  # keep only cells that contribute meaningfully to this lineage
+  keep <- !is.na(pr_i[, 1]) & cw_i[, 1] > 0
+  
+  fitGAM(
+    counts = counts[, keep, drop = FALSE],
+    pseudotime = pr_i[keep, , drop = FALSE],
+    cellWeights = cw_i[keep, , drop = FALSE],
+    conditions = cond_use[keep],
+    nknots = 8,
+    verbose = TRUE
+  )
+}, BPPARAM = BPPARAM)
+
+names(sce_list) <- lineage_names
+
+saveRDS(sce_list, "../outputs/QS/fitGAM_WT_Mt_allLin.rds")
+
+conditionRes.l <- lapply(sce_list, conditionTest, knots = c(1,8))
+
+saveRDS(conditionRes.l, "../outputs/QS/compRes_WT_Mt_allLin.rds")
+
+conditionRes.l <- readRDS("../outputs/QS/compRes_WT_Mt_allLin.rds")
+
+conditionRes.df.filt <- do.call(rbind,lapply(names(conditionRes.l), function(lin){
+  conditionRes.l[[lin]] %>% 
+    rownames_to_column("gene") %>% 
+    mutate(lineage = lin) %>% 
+  filter(pvalue < 0.05) %>% 
+  arrange(desc(waldStat)) 
+})) %>%
+  mutate(padj = p.adjust(pvalue, method = "BH")) %>%
+  filter(padj < 0.05) %>%
+  group_by(lineage) %>%
+  {
+    thr <- quantile(.$waldStat, 0.95)
+    filter(., waldStat > thr)
+  } %>% 
+  ungroup()
+
+
+
+conditionRes.df.filtered <- conditionRes.df.filt %>%
+  semi_join(
+    startResLin_filt %>% 
+      mutate(Lineage = str_to_title(Lineage)) %>% 
+      select(genes, Lineage),
+    by = c("gene" = "genes", "lineage" = "Lineage")
+  )
+```
