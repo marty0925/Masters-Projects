@@ -1,0 +1,1298 @@
+---
+title: "DiffExp_TDPvsFUS"
+format: html
+editor: visual
+---
+
+```{r}
+#Packages to detach
+packages_to_kill <- c("plotly", "sctransform", "tidyr", "Seurat", "patchwork", "ggrepel", "ggplot2", "dplyr")
+
+for (pkg in packages_to_kill) {
+  # If it is officially attached via library(), detach it
+  if (paste0("package:", pkg) %in% search()) {
+    # THE FIX: Added character.only = TRUE right here!
+    suppressWarnings(detach(paste0("package:", pkg), unload = TRUE, character.only = TRUE, force = TRUE))
+  }
+  
+  # If the namespace is still lingering in the background, unload it
+  if (pkg %in% loadedNamespaces()) {
+    suppressWarnings(unloadNamespace(pkg))
+  }
+}
+```
+
+## Setting path to Libraries
+
+Setting the packages' path
+
+```{r}
+.libPaths("/scratch/prj/dn_hamidlab_msc_proj/Libraries") #HPC path to libraries used
+```
+
+Loading the Older version of ggplot2 which is fully compatible with the latest version of Seurat.
+
+##### ggplot2 dependency issue fix
+
+(09/02/26) Currently, the Seurat package is not fully compatible with the latest version of ggplot2 (v4.0.0). To get around this, I download an older version into the Libraries folder, which I can then load into the R script when needed. (This should help with the VlnPlot problem.)
+
+```{r}
+Old_ggplot_Path <- "/scratch/prj/dn_hamidlab_msc_proj/Libraries/ggplot2_3.5.2_Old/" #Ensure path above is right for machine.
+
+#Comment back in if needed
+# remotes::install_version( "ggplot2", version = "3.5.2", lib = Old_ggplot_Path, repos = "http://cran.us.r-project.org")
+```
+
+Next is to load the older version of ggplot2.
+
+```{r}
+library(ggplot2, lib.loc = Old_ggplot_Path) #v3.5.2
+```
+
+### Preparing Seurat Dependencies
+
+```{r}
+#Manipulations to the data
+library(dplyr) #v1.1.4
+library(patchwork) #v1.3.0
+library(stringr) #v1.5.1
+
+#DEGs Visualisations
+library(ggvenn) #v0.1.19
+library(UpSetR) #v1.4.0
+library(grid) #v4.3.0
+
+#Colours
+library(khroma) #v1.17.0 (Colour Blind Palettes)
+colr.blind <- scale_color_discreterainbow()
+colr.blind.fill <- scale_fill_light()
+
+#Seurat work
+library(Seurat) #v5.4.0
+
+#Gene Ontology
+library(gprofiler2) #v0.2.3
+library(rrvgo) #V1.14.2
+```
+
+### Paths to Objects
+```{r}
+#Path to Seurat Objects
+Seurat.Object_Path <- "/cephfs/volumes/hpc_data_prj/dn_hamidlab_msc_proj/ada97657-79ef-4573-bd29-4e8ab8a70de0/k25115470/6_Month_Research_Prj/Results/Outputs/Seurat_Objects"
+
+#Path to Save differential expression results (Time saver)
+DiffExpre_Path <- "/cephfs/volumes/hpc_data_prj/dn_hamidlab_msc_proj/ada97657-79ef-4573-bd29-4e8ab8a70de0/k25115470/6_Month_Research_Prj/Results/Outputs/Differential_Expression/Detailed"
+
+#Path to Save Volcano Plots
+Vol.DE_DetailedPath <- "/cephfs/volumes/hpc_data_prj/dn_hamidlab_msc_proj/ada97657-79ef-4573-bd29-4e8ab8a70de0/k25115470/6_Month_Research_Prj/Results/Figures/Raw_Figures/Volcano_Plots/Detailed"
+```
+
+#### Loading in latest Seurat object
+
+Loading the object made previously. (Change the file location of the object depending on where it is found in the environment.)
+
+```{r}
+# Load the data into the ALS_Seurat object
+# Using the final object from the QC, Clustering and Annotation Script
+
+ALS_Seurat <- readRDS(file.path(Seurat.Object_Path, "02_ALS_Seurat.rds"))
+```
+
+Inspect the object to make sure the correct version is loaded
+
+```{r}
+(ALS_Seurat)
+print(ALS_Seurat)
+```
+
+##Differential Expression 
+
+##### What is it? 
+
+Differential expression is the analysis of the expression data, comparing the results from two or more different groups (in this case 3. Control, Fus and TARDBP_M377V) to test for significant differences.
+
+When looking at the statistical differences it is important to have a control group as this allows us to compare the differences of the mutations to the "normal".
+
+##### Checking Distribution of our data
+
+This is done to determine the type of statistical test we need to use for the differential expression. (Parametric Vs Non-Parametric) The results from the graphs below indicate that the distribution is not normally distributed and a non-parametric test should be used (Non-Parametric).
+
+```{r}
+ALS_Seurat@assays$RNA
+plot(density(sample(JoinLayers(ALS_Seurat@assays$RNA)$count["TAC1",],1000)),cex=0,lty=1, main="Density of TAC1 in 1000 random cells")
+plot(density(sample(JoinLayers(ALS_Seurat@assays$RNA)$count["DLK1",],1000)),cex=0,lty=1, main="Density of DLK1 in 1000 random cells")
+hist(sample(sample(JoinLayers(ALS_Seurat@assays$RNA)$count["CCNB1",],1000)),breaks = 99, main="Histograpm of CCNB1 in 1000 random cells")
+hist(sample(sample(JoinLayers(ALS_Seurat@assays$RNA)$count["TAC1",],1000)),breaks = 99, main="Histograpm of CCNB1 in 1000 random cells")
+
+#Checking the numbers that are associated with the different counts in each of the cells for the ALS_seuart SCT assay. 
+as.matrix(ALS_Seurat[["SCT"]]$counts[1:5, 1:5])
+```
+
+### Pre-Prep Step
+
+This is the preparation step which needs to be done before being able to continue with the "findmarker" functions later on. It is done to reverse the complex mathematical regression of the SCTransform process back into corrected counts, allowing Seurat to accurately calculate differential expression between your cell groups.
+
+Pre-Prep numbers
+
+```{r}
+as.matrix(ALS_Seurat[["SCT"]]$counts[1:5, 1:5])
+```
+
+The Prep
+
+```{r}
+ALS_Seurat <- PrepSCTFindMarkers(ALS_Seurat, assay = "SCT", verbose = TRUE) #This does not add another SCT assay, it prepares the current SCT layer for differential expression.
+as.matrix(ALS_Seurat[["SCT"]]$counts[1:5, 1:5])
+```
+
+Need to set the default assay to "SCT" Need to do this so that the correct and normalised assay is used when conducting the findmarkers analysis.
+
+```{r}
+DefaultAssay(ALS_Seurat) = "SCT"
+```
+
+#### New Column for Identity
+
+Like in the last .qmd file i'm adding a new column which allows us to group the cells based on their genotype but where TARDBP and FUS mutations are not grouped together. This level of detail is used to trying and gain further insight into the effect that the specific mutations have.
+
+```{r}
+ALS_Seurat$Genotype_Group <- ifelse(grepl("FUS", ALS_Seurat$genotype), "FUS", ifelse(grepl("TARDBP", ALS_Seurat$genotype), "TARDBP", "Control"))
+#Usign the ifelse statement to group them together
+```
+
+## DE: FindMarkers Analysis
+
+This part is the actual calculation of the differential expression analysis. It is done to identify the significant changes in gene expression between the controls and mutant genotypes in the object.
+
+Adding a new column to our object to aid with the analysis.
+
+```{r}
+ALS_Seurat$Label_Comb <- paste(ALS_Seurat$Genotype_Group, ALS_Seurat$cell_group, sep = "_")
+unique(ALS_Seurat$Label_Comb)
+```
+
+Setting this new column as the identity column
+
+```{r}
+Idents(ALS_Seurat) <- "Label_Comb"
+```
+
+##### Recommenting (Not needing to re-analyse)
+
+Putting the files into objects after analysis. Useful when coming back to the analysis and markdown document at a later date. The re-commenting information was done on (20th Apr 26) (meaning importing the CSV files is good from then).
+
+```{r}
+#Comment and uncomment when needed. 
+
+#dir.exists("/scratch/prj/dn_hamidlab_msc_proj/k25115470/Results/ALS_Seurat_Analysis")
+#list.files("/scratch/prj/dn_hamidlab_msc_proj/k25115470/Results/ALS_Seurat_Analysis/DiffExpression_Analysis/")
+
+##Progenitors
+ProFUS_FindMarker <- read.csv(file.path(DiffExpre_Path, "DE_ProgenFUS_FindMarker.csv"), header = T, row.names = 1)
+
+ProTARDBP_FindMarker <-  read.csv(file.path(DiffExpre_Path, "DE_ProgenTARDBP_FindMarker.csv"), header = T, row.names = 1)
+
+##Inter Neurons
+InterFUS_FindMarker <-  read.csv(file.path(DiffExpre_Path, "DE_InterFUS_FindMarker.csv"), header = T, row.names = 1)
+
+InterTARDBP_FindMarker <- read.csv(file.path(DiffExpre_Path, "DE_InterTARDBP_FindMarker.csv"), header = T, row.names = 1)
+
+##Motor Neurons
+MotorFUS_FindMarker <- read.csv(file.path(DiffExpre_Path, "DE_MotorFUS_FindMarker.csv"), header = T, row.names = 1)
+
+MotorTARDBP_FindMarker <- read.csv(file.path(DiffExpre_Path, "DE_MotorTARDBP_FindMarker.csv"), header = T, row.names = 1)
+```
+
+#### FindMarkers Progenitor scoring
+
+Looks at the Fus and TARDBP Vs controls for the progenitor cells.
+
+```{r}
+#ProFUS_FindMarker <- FindMarkers(ALS_Seurat, ident.1 = "FUS_Progenitor", ident.2 = "Control_Progenitor",test.use = "MAST", recorrect_umi = F, verbose = T, random.seed = 25115470)
+
+#ProTARDBP_FindMarker <- FindMarkers(ALS_Seurat, ident.1 = "TARDBP_Progenitor", ident.2 = "Control_Progenitor",test.use = "MAST", recorrect_umi = F, verbose = T, random.seed = 25115470)
+
+##Adds a column with the gene names as this makes it clearer in future if the file is needed. This is because the row names co not come with a title.
+#ProFUS_FindMarker$gene_name <- rownames(ProFUS_FindMarker)
+#ProTARDBP_FindMarker$gene_name <- rownames(ProTARDBP_FindMarker)
+
+##To write the CSV file
+dir.exists("/scratch/prj/dn_hamidlab_msc_proj/k25115470/Results/ALS_Seurat_Analysis/DiffExpression_Analysis/Detailed_TARDBPnFUS") #True, no need to check for other csv files as all in the same place
+
+#write.csv(ProFUS_FindMarker, file.path(DiffExpre_Path, "DE_ProgenFUS_FindMarker.csv"))
+
+#write.csv(ProTARDBP_FindMarker, file.path(DiffExpre_Path, "DE_ProgenTARDBP_FindMarker.csv"))
+```
+
+#### FindMarkers Interneuron scoring
+
+Looks at the FUS and TARDBP Vs controls for the InterNeuron cells.
+
+```{r}
+#InterFUS_FindMarker <- FindMarkers(ALS_Seurat, ident.1 = "FUS_InterNeuron", ident.2 = "Control_InterNeuron",test.use = "MAST", recorrect_umi = F, verbose = T, random.seed = 25115470)
+
+#InterTARDBP_FindMarker <- FindMarkers(ALS_Seurat, ident.1 = "TARDBP_InterNeuron", ident.2 = "Control_InterNeuron",test.use = "MAST", recorrect_umi = F, verbose = T, random.seed = 25115470)
+
+##Adds a column with the gene names as this makes it clearer in future if the file is needed. This is because the row names co not come with a title.
+#InterFUS_FindMarker$gene_name <- rownames(InterFUS_FindMarker)
+#InterTARDBP_FindMarker$gene_name <- rownames(InterTARDBP_FindMarker)
+
+#write.csv(InterFUS_FindMarker, file.path(DiffExpre_Path, "DE_InterFUS_FindMarker.csv"))
+
+#write.csv(InterTARDBP_FindMarker, file.path(DiffExpre_Path, "DE_InterTARDBP_FindMarker.csv"))
+```
+
+#### FindMarkers Motorneuron Scoring
+
+Looks at the Fus and TARDBP Vs controls for the Motor Neurons cells.
+
+```{r}
+#MotorFUS_FindMarker <- FindMarkers(ALS_Seurat, ident.1 = "FUS_MotorNeuron", ident.2 = "Control_MotorNeuron",test.use = "MAST", recorrect_umi = F, verbose = T, random.seed = 25115470)
+
+#MotorTARDBP_FindMarker <- FindMarkers(ALS_Seurat, ident.1 = "TARDBP_MotorNeuron", ident.2 = "Control_MotorNeuron",test.use = "MAST", recorrect_umi = F, verbose = T, random.seed = 25115470)
+
+##Adds a column with the gene names as this makes it clearer in future if the file is needed. This is because the row names co not come with a title.
+#MotorFUS_FindMarker$gene_name <- rownames(MotorFUS_FindMarker)
+#MotorTARDBP_FindMarker$gene_name <- rownames(MotorTARDBP_FindMarker)
+
+#write.csv(MotorFUS_FindMarker, file.path(DiffExpre_Path, "DE_MotorFUS_FindMarker.csv"))
+
+#write.csv(MotorTARDBP_FindMarker, file.path(DiffExpre_Path, "DE_MotorTARDBP_FindMarker.csv"))
+```
+
+#### Combining all 6 dataframes
+
+Looking to combine the dataframes with each other with an extra column which identifies the different gene figures and what cells the results pertains to.
+
+```{r}
+#Adding in the identity of each of the different dataframes in order to use the rbinds function
+MotorFUS_FindMarker$cell_group <- "FUS_Motor"
+MotorTARDBP_FindMarker$cell_group <- "TARDBP_Motor"
+
+InterFUS_FindMarker$cell_group <- "FUS_Inter"
+InterTARDBP_FindMarker$cell_group <- "TARDBP_Inter"
+
+ProFUS_FindMarker$cell_group   <- "FUS_Progenitor"
+ProTARDBP_FindMarker$cell_group   <- "TARDBP_Progenitor"
+
+#Checking the shape fo the dataframes for rbinds
+dim(MotorFUS_FindMarker)
+dim(MotorTARDBP_FindMarker)
+dim(InterFUS_FindMarker)
+dim(InterTARDBP_FindMarker)
+dim(ProFUS_FindMarker)
+dim(ProTARDBP_FindMarker)
+#All the columns have the same number of columns allowing me to use the rbinds expression to bring them together
+```
+
+Run this next chunk if the dims above are good for rbind
+
+```{R}
+#Combing the results together into one large dataframe
+ALS_Comp_Markers <- rbind(MotorFUS_FindMarker, MotorTARDBP_FindMarker, InterFUS_FindMarker, InterTARDBP_FindMarker, ProFUS_FindMarker, ProTARDBP_FindMarker)
+
+dim(ALS_Comp_Markers) #Checking the dimensions of that final dataframe just to make sure it lines up with what is expected
+```
+
+###Filtering results
+
+```{R}
+ALS_Filtered_Markers <-  ALS_Comp_Markers %>% filter(p_val_adj<0.05, abs(avg_log2FC)>0.25) #Filter kept the same from previous DE for continuity
+dim(ALS_Filtered_Markers) 
+unique(ALS_Filtered_Markers$cell_group)
+length(ALS_Filtered_Markers$gene_name)
+length(unique(ALS_Filtered_Markers$gene_name))
+ALS_Filtered_Markers
+```
+
+##Visualisations 
+
+### Bar plot
+
+```{r}
+ALS_Filtered_Markers %>%
+mutate(Direction = ifelse(avg_log2FC > 0, "Upregulated", "Downregulated")) %>%
+ggplot(aes(x=cell_group, fill=Direction)) +
+  geom_bar(position="dodge") + 
+  theme_minimal() +
+  labs(title = "Differentially Expressed Gene Counts", x = "Cell Type", y = "Number of Genes") +
+  scale_fill_manual(values = c("Upregulated" = "pink2", "Downregulated" = "turquoise3")) +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1))
+```
+
+### UpSet Plot
+
+##### Upregulated genes
+
+This generates a list of the upregulated genes
+
+```{r}
+Spec_upreg_genes_list <- list(
+  FUSMotor = ALS_Filtered_Markers %>% 
+    filter(cell_group == "FUS_Motor", avg_log2FC > 0) %>% 
+    pull(gene_name),
+  
+  TARDBPMotor = ALS_Filtered_Markers %>% 
+    filter(cell_group == "TARDBP_Motor", avg_log2FC > 0) %>% 
+    pull(gene_name),
+
+  FUSInter = ALS_Filtered_Markers %>% 
+    filter(cell_group == "FUS_Inter", avg_log2FC > 0) %>% 
+    pull(gene_name),
+  
+  TARDBPInter = ALS_Filtered_Markers %>% 
+    filter(cell_group == "TARDBP_Inter", avg_log2FC > 0) %>% 
+    pull(gene_name),
+    
+  FUSProgenitor = ALS_Filtered_Markers %>% 
+    filter(cell_group == "FUS_Progenitor", avg_log2FC > 0) %>% 
+    pull(gene_name),
+
+  TARDBPProgenitor = ALS_Filtered_Markers %>% 
+    filter(cell_group == "TARDBP_Progenitor", avg_log2FC > 0) %>% 
+    pull(gene_name)
+)
+#List of the upregulated genes
+#Spec_upreg_genes_list
+```
+
+Visualisation of the upregulated genes
+
+```{r}
+Detail.DE_UpregSet <- upset(fromList(Spec_upreg_genes_list), order.by = "freq", main.bar.color = "black", sets.bar.color = "#1E88E5", text.scale = 1.5, nintersects = 15, nsets=6)
+
+png(filename = "/scratch/prj/dn_hamidlab_msc_proj/k25115470/6_Month_Research_Prj/Results/Figures/Raw_Figures/UpSet_Plots/Detail.DE_UpregSet.png", width = 10, height = 8, units = "in", res = 300)
+
+print(Detail.DE_UpregSet)
+
+grid.text("Detailed UpSet Plot: Upregulated Genes", 
+          x = 0.66,            # Centers it perfectly horizontally (0.5 = 50% width)
+          y = 0.96,           # Puts it right at the top (0.96 = 96% height)
+          gp = gpar(fontsize = 13, fontface = "bold")) # Sets your font size and weight
+
+dev.off()
+```
+
+#####Downregulation genes This generates a list of the down regulated genes
+
+```{r}
+Spec_downreg_genes_list <- list(
+  FUSMotor = ALS_Filtered_Markers %>% 
+    filter(cell_group == "FUS_Motor", avg_log2FC < 0) %>% 
+    pull(gene_name),
+  
+  TARDBPMotor = ALS_Filtered_Markers %>% 
+    filter(cell_group == "TARDBP_Motor", avg_log2FC < 0) %>% 
+    pull(gene_name),
+
+  FUSInter = ALS_Filtered_Markers %>% 
+    filter(cell_group == "FUS_Inter", avg_log2FC < 0) %>% 
+    pull(gene_name),
+  
+  TARDBPInter = ALS_Filtered_Markers %>% 
+    filter(cell_group == "TARDBP_Inter", avg_log2FC < 0) %>% 
+    pull(gene_name),
+    
+  FUSProgenitor = ALS_Filtered_Markers %>% 
+    filter(cell_group == "FUS_Progenitor", avg_log2FC < 0) %>% 
+    pull(gene_name),
+
+  TARDBPProgenitor = ALS_Filtered_Markers %>% 
+    filter(cell_group == "TARDBP_Progenitor", avg_log2FC < 0) %>% 
+    pull(gene_name)
+)
+#List of the down regulated genes
+Spec_downreg_genes_list
+```
+
+This is the final of plot of the downregulated genes
+
+```{r}
+Detail.DE_DwnregSet <- upset(fromList(Spec_downreg_genes_list), order.by = "freq", main.bar.color = "black", sets.bar.color = "#1E88E5", text.scale = 1.5, nintersects = 15, nsets=6)
+
+png(filename = "/scratch/prj/dn_hamidlab_msc_proj/k25115470/6_Month_Research_Prj/Results/Figures/Raw_Figures/UpSet_Plots/Detail.DE_DwnregSet.png", width = 10, height = 8, units = "in", res = 300)
+
+print(Detail.DE_DwnregSet)
+
+grid.text("Detailed UpSet Plot: Downregulated Genes", 
+          x = 0.66,            # Centers it perfectly horizontally (0.5 = 50% width)
+          y = 0.96,           # Puts it right at the top (0.96 = 96% height)
+          gp = gpar(fontsize = 13, fontface = "bold")) # Sets your font size and weight
+
+dev.off()
+```
+
+### Venn Diagram (Motor Neuron)
+
+Looking specifically at motor neurons because those are the most effected neuron type.
+
+```{r}
+ALS_Comp_Markers
+Spec_upreg_genes_list$
+Spec_downreg_genes_list 
+```
+
+#### Up-Regulated Motor
+
+A Venn diagram of the up Regulated genes looking at FUS and TARDBP mutations
+
+```{r}
+Venn_upreg <- ggvenn(Spec_upreg_genes_list[c("FUSMotor", "TARDBPMotor")], fill_color = c("#0073C2FF", "#EFC000FF"), stroke_size = 0.5, set_name_size = 6, show_percentage = F) + ggtitle("Upregulated Genes")
+Venn_upreg
+```
+
+#### Down-Regulated Motor
+
+A Venn diagram of the Down Regulated genes looking at FUS and TARDBP mutations
+
+```{r}
+Venn_downreg <- ggvenn(Spec_downreg_genes_list[c("FUSMotor", "TARDBPMotor")], fill_color = c("#0073C2FF", "#EFC000FF"), stroke_size = 0.5, set_name_size = 6, show_percentage = F) + ggtitle("Upregulated Genes")
+Venn_downreg
+```
+
+##Volcano Plots
+
+```{r}
+comp_volcano_plots <- list()
+
+# put all 6 detailed data frames into a named list
+detailed_de_list <- list(
+  "FUS_Motor_Neurons"    = MotorFUS_FindMarker,
+  "TARDBP_Motor_Neurons"  = MotorTARDBP_FindMarker,
+  "FUS_Interneurons"     = InterFUS_FindMarker,
+  "TARDBP_Interneurons"   = InterTARDBP_FindMarker,
+  "FUS_Progenitors"      = ProFUS_FindMarker,
+  "TARDBP_Progenitors"    = ProTARDBP_FindMarker
+)
+
+# Loop through to generate all 6 plots
+for (comp_name in names(detailed_de_list)) {
+  
+  # Pull data frame and guarantee gene symbols are present as a column
+  plot_df <- detailed_de_list[[comp_name]]
+  plot_df$gene_name <- rownames(plot_df)
+  
+  # Handle zero p-values dynamically to protect against infinity boundary bugs
+  min_nonzero <- min(plot_df$p_val_adj[plot_df$p_val_adj > 0], na.rm = TRUE)
+  plot_df$p_val_adj_capped <- ifelse(plot_df$p_val_adj == 0, min_nonzero * 0.1, plot_df$p_val_adj)
+  
+  # Categorise significance using your continuity thresholds
+  plot_df$Significance <- "Not Significant"
+  plot_df$Significance[plot_df$avg_log2FC > 0.25 & plot_df$p_val_adj < 0.05] <- "Upregulated"
+  plot_df$Significance[plot_df$avg_log2FC < -0.25 & plot_df$p_val_adj < 0.05] <- "Downregulated"
+  
+  # Isolate top 5 up and down genes for clean reporting
+  top_up <- plot_df %>% filter(Significance == "Upregulated") %>% arrange(p_val_adj) %>% head(5)
+  top_down <- plot_df %>% filter(Significance == "Downregulated") %>% arrange(p_val_adj) %>% head(5)
+  labels_df <- rbind(top_up, top_down)
+  
+  # Format clean title text (e.g., swapping underscores for clean spaces)
+  clean_title <- gsub("_", " ", comp_name)
+  
+  # Construct the individual plot
+  p <- ggplot(plot_df, aes(x = avg_log2FC, y = -log10(p_val_adj_capped))) +
+    geom_point(aes(color = Significance), alpha = 0.6, size = 1.2) +
+    
+    # Universal Okabe-Ito color-blind safe palette
+    scale_color_manual(values = c("Upregulated" = "#D55E00", "Downregulated" = "#0072B2", "Not Significant" = "darkgrey")) +
+    
+    # Smart label repulsion with forced tracking anchor lines
+    ggrepel::geom_text_repel(
+      data = labels_df, 
+      aes(label = gene_name), 
+      color = "black", 
+      size = 3, 
+      fontface = "bold",
+      box.padding = 0.6,       
+      point.padding = 0.3,    
+      max.overlaps = Inf,     
+      segment.color = "grey30", 
+      segment.size = 0.4,       
+      min.segment.length = 0    
+    ) +
+    # Threshold crosshair boundaries
+    geom_vline(xintercept = c(-0.25, 0.25), linetype = "dashed", alpha = 0.4) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", alpha = 0.4) +
+    labs(
+      title = paste0(clean_title, " vs Control"), #\nDifferential Expression Profile
+      x = "Average Log2 Fold Change",
+      y = expression(-Log[10]~Adjusted~P-Value),
+      color = "Expression Status"
+    ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5, lineheight = 1.2),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "right"
+)  
+
+      #theme(
+      #plot.title = element_text(face = "bold", size = 12, hjust = 0.5, lineheight = 1.2),
+      #legend.position = "right"
+  
+  # Save 
+  ggsave(
+    filename = file.path(Vol.DE_DetailedPath, paste0("volcano.Detailed_", comp_name, ".png")), 
+    plot = p, 
+    width = 10, 
+    height = 8, 
+    units = "in", 
+    dpi = 300
+  )
+  
+  comp_volcano_plots[[comp_name]] <- p
+}
+```
+
+
+####Summary Metrics Table
+```{r}
+# Ensure your directional tracking factor is assigned uniformly 
+detailed_tagged <- ALS_Filtered_Markers %>%
+  mutate(Direction = ifelse(avg_log2FC > 0, "Upregulated", "Downregulated"))
+
+# 1. Row calculation helper function
+calculate_row_metrics <- function(dataframe_subset, row_label, grouping_label) {
+  total_count <- length(dataframe_subset$gene_name)
+  up_count    <- sum(dataframe_subset$Direction == "Upregulated")
+  down_count  <- sum(dataframe_subset$Direction == "Downregulated")
+  
+  data.frame(
+    Analysis_Tier = grouping_label,
+    Subset_Condition = row_label,
+    Total_DEGs = total_count,
+    Upregulated = up_count,
+    Downregulated = down_count
+  )
+}
+
+# -------------------------------------------------------------------------
+# Compile Tier 1: Master Global Summary
+# -------------------------------------------------------------------------
+tier1_summary <- calculate_row_metrics(detailed_tagged, "All Combined Mutants", "Global Pool")
+
+# -------------------------------------------------------------------------
+# Compile Tier 2: Mutation-Specific Profiles (Pooled Across Lineages)
+# -------------------------------------------------------------------------
+fus_pooled   <- detailed_tagged %>% filter(grepl("FUS", cell_group))
+tardbp_pooled <- detailed_tagged %>% filter(grepl("TARDBP", cell_group))
+
+tier2_summary <- rbind(
+  calculate_row_metrics(fus_pooled, "FUS (All Cell Types)", "Mutation Pooled"),
+  calculate_row_metrics(tardbp_pooled, "TARDBP (All Cell Types)", "Mutation Pooled")
+)
+
+# -------------------------------------------------------------------------
+# Compile Tier 3: Individual Volcano Plot Subsets (6 Distinct Groups)
+# -------------------------------------------------------------------------
+tier3_summary <- rbind(
+  calculate_row_metrics(detailed_tagged %>% filter(cell_group == "FUS_Progenitor"), "FUS Progenitors", "Volcano Subset"),
+  calculate_row_metrics(detailed_tagged %>% filter(cell_group == "TARDBP_Progenitor"), "TARDBP Progenitors", "Volcano Subset"),
+  calculate_row_metrics(detailed_tagged %>% filter(cell_group == "FUS_Inter"), "FUS Interneurons", "Volcano Subset"),
+  calculate_row_metrics(detailed_tagged %>% filter(cell_group == "TARDBP_Inter"), "TARDBP Interneurons", "Volcano Subset"),
+  calculate_row_metrics(detailed_tagged %>% filter(cell_group == "FUS_Motor"), "FUS Motor Neurons", "Volcano Subset"),
+  calculate_row_metrics(detailed_tagged %>% filter(cell_group == "TARDBP_Motor"), "TARDBP Motor Neurons", "Volcano Subset")
+)
+
+# -------------------------------------------------------------------------
+# Master Combination Matrix
+# -------------------------------------------------------------------------
+master_deg_snapshot_table <- rbind(tier1_summary, tier2_summary, tier3_summary)
+
+# Display raw data snapshot directly to your terminal console
+print(master_deg_snapshot_table)
+```
+#### Statistically significant
+```{r}
+# =========================================================================
+# Statistical Testing for Directional Skew (Upregulated vs Downregulated)
+# =========================================================================
+
+# Filter down to just your 6 distinct volcano subsets
+volcano_counts <- master_deg_snapshot_table %>%
+  filter(Analysis_Tier == "Volcano Subset")
+
+# Run binomial test for each row
+skew_results <- do.call(rbind, lapply(1:nrow(volcano_counts), function(i) {
+  row <- volcano_counts[i, ]
+  
+  # Protect against testing empty sets
+  if (row$Total_DEGs == 0) return(NULL)
+  
+  # Two-sided binomial test against an expected 50/50 split
+  test_res <- binom.test(x = row$Upregulated, n = row$Total_DEGs, p = 0.5, alternative = "two.sided")
+  
+  data.frame(
+    Group = row$Subset_Condition,
+    Total_DEGs = row$Total_DEGs,
+    Up = row$Upregulated,
+    Down = row$Downregulated,
+    Skew_Ratio = round(row$Upregulated / row$Total_DEGs, 2),
+    p_value = format.pval(test_res$p.value, digits = 3)
+  )
+}))
+
+print(skew_results)
+```
+
+
+####Number Summary Stats
+```{r}
+# Extract metadata for rapid processing
+metadata_df <- as.data.frame(ALS_Seurat@meta.data)
+
+# Helper function to generate standardized tier rows
+create_count_row <- function(df, grouping_label, subset_label) {
+  data.frame(
+    Analysis_Tier = grouping_label,
+    Grouping_Subset = subset_label,
+    Total_Cell_Count = nrow(df)
+  )
+}
+
+# -------------------------------------------------------------------------
+# Tier 1: Total Cells per Broad Cell Type
+# -------------------------------------------------------------------------
+tier1_counts <- do.call(rbind, lapply(unique(metadata_df$cell_group), function(cell) {
+  create_count_row(metadata_df %>% filter(cell_group == cell), "1. Cell Type Broad", cell)
+}))
+
+# -------------------------------------------------------------------------
+# Tier 2: Cell Type split by Mutation Type (6 Volcano Plot Pools)
+# -------------------------------------------------------------------------
+tier2_counts <- do.call(rbind, lapply(unique(metadata_df$Label_Comb), function(comb) {
+  create_count_row(metadata_df %>% filter(Label_Comb == comb), "2. Cell Type & Mutation", comb)
+}))
+
+# -------------------------------------------------------------------------
+# Tier 3: Cell Type split by Grouped Mutants (Mutant vs Control per lineage)
+# -------------------------------------------------------------------------
+# Re-tag using your simplex mapping rules
+metadata_df <- metadata_df %>%
+  mutate(Grouped_Mutant_Status = ifelse(Genotype_Group == "Control", "Control", "Pooled_Mutant"))
+
+tier3_counts <- do.call(rbind, lapply(unique(metadata_df$cell_group), function(cell) {
+  sub_df <- metadata_df %>% filter(cell_group == cell)
+  rbind(
+    create_count_row(sub_df %>% filter(Grouped_Mutant_Status == "Pooled_Mutant"), "3. Cell Type & Grouped Mutant", paste0("Mutant_", cell)),
+    create_count_row(sub_df %>% filter(Grouped_Mutant_Status == "Control"), "3. Cell Type & Grouped Mutant", paste0("Control_", cell))
+  )
+}))
+
+# -------------------------------------------------------------------------
+# Tier 4: Total Isolated Grouped Mutants (The Broad Snapshot)
+# -------------------------------------------------------------------------
+tier4_counts <- rbind(
+  create_count_row(metadata_df %>% filter(Grouped_Mutant_Status == "Pooled_Mutant"), "4. Grouped Mutant Broad", "Total_Pooled_Mutants"),
+  create_count_row(metadata_df %>% filter(Grouped_Mutant_Status == "Control"), "4. Grouped Mutant Broad", "Total_Controls")
+)
+
+# -------------------------------------------------------------------------
+# Master Combination Snapshot Table
+# -------------------------------------------------------------------------
+master_cell_counts_table <- rbind(tier1_counts, tier2_counts, tier3_counts, tier4_counts)
+
+# Display to your console window 
+print(master_cell_counts_table)
+```
+
+
+
+
+## Gene Ontology
+
+This Gene Ontology was done using GeneProfiler2.
+
+Getting a list of the just the gene names
+
+```{r}
+Signif_gene_ls<- ALS_Filtered_Markers$gene_name
+ALS_Filtered_Markers
+```
+
+Adding the custom background as an object for quick and easy changing and imputation down the line.
+
+```{r}
+custom_bg <- rownames(ALS_Seurat[["RNA"]])
+```
+
+Setting a universal save path fo the figures
+
+```{r}
+DE.GO_DotPath_detail <- "/cephfs/volumes/hpc_data_prj/dn_hamidlab_msc_proj/ada97657-79ef-4573-bd29-4e8ab8a70de0/k25115470/6_Month_Research_Prj/Results/Figures/Raw_Figures/Gene_Ontology/DE/Detailed"
+```
+
+#### All Genes
+
+Looks at all the genes in our significant list. This analysis however could be mostly redundant becuase of the privious script to this as it takes the same information again.
+
+```{r}
+#gost_res_global <- gost(
+  #query = Signif_gene_ls,      # vector of all the significant genes
+  #custom_bg = custom_bg, # This is the custom gene list used to reduce noise
+  #organism = "hsapiens",       # Human database
+  #significant = TRUE,          # only show pathways that pass the FDR threshold
+  #ordered_query = FALSE,       # Keep FALSE unless you pre-sorted your list by Log2FC
+  #user_threshold = 0.05,       # adjusted p-value cutoff
+  #correction_method = "g_SCS", #custom correction method. more gentle FDR
+  #sources = c("GO:BP", "KEGG", "REAC"),#GO Biological Process, KEGG, and Reactome
+  #evcodes = T     #Gives the genes in each row
+#)
+
+#unique(gost_res_global$result$query) #To make sure that all groupings have been categorised
+
+```
+
+#####Visualisation (rrvgo + dotplot) The input for rrvgo is a vector input of the enriched GO terms, along with a vector of the scores. (Although the scores are not needed, and a score is provided by using GO term size as a score)
+
+```{r}
+#Next is to calculate the similarity matrix to be able to run the reducesimmatrix
+#gblsimMatrix <- calculateSimMatrix(gost_res_global$result$term_id, orgdb="org.Hs.eg.db", ont="BP", method="Rel")
+
+#Next is to calculate the scores used in the reduce simmatrix calculations
+#gblscores <- setNames(-log10(gost_res_global$result$p_value), gost_res_global$result$term_id)
+
+#Next is the calculation of the reduceSimMAtrix itself
+#gblreducedTerms <- reduceSimMatrix(gblsimMatrix, gblscores, threshold=0.7, orgdb="org.Hs.eg.db")
+
+#gblreducedTerms
+
+#Visualisations (global- up + down)
+#treemapPlot(gblreducedTerms)
+#heatmapPlot(gblsimMatrix,gblreducedTerms,annotateParent=TRUE,annotationLabel="parentTerm",fontsize=6)
+```
+
+Dot plot visualisation
+
+```{r}
+#Dotplot
+#Filtering the results based on the term size to that they are not too generic and so that the smallest ones are not included. 
+#filtered_gost_res_global <- gost_res_global$result %>% filter(source == "GO:BP") %>% filter(term_size >= 10 & term_size <= 1000) %>% arrange(p_value)
+
+#fil_global_dotplot <- filtered_gost_res_global$result %>% # Change to your object
+  #arrange(p_value) %>% 
+  #head(10) %>% 
+  #ggplot(aes(x = -log10(p_value), y = reorder(term_name,-log10(p_value)))) +
+    #geom_point(aes(size = intersection_size, color = p_value)) +
+    #scale_color_gradient(low = "orange", high = "blue") +
+    #labs(title = paste("Differential Expression (Global):\nAll Significant DE Genes — Top GO Terms"), # change to your title
+      #x = bquote(~-Log[10]~ 'p adjust'),
+      #y = "GO Terms",
+      #size = "Gene Count") +
+    #theme_minimal() +
+   #theme(text = element_text(size = 10))
+
+#fil_global_dotplot
+
+
+#Better naming for save file
+#DE.GO.Det_AllGene <- fil_global_dotplot
+
+#ggsave(
+  #filename = file.path(DE.GO_DotPath_detail, "DE.GO.Det_AllGene.png"), 
+  #plot = DE.GO.Det_AllGene, 
+  #width = 10,      # Generous width for long GO term descriptions
+  #height = 8,     # Perfect height for a Top 10 list
+  #dpi = 300       # High resolution for publication/thesis printing
+  #units = "in", 
+#)
+```
+
+#### Upregulated Motor Genes
+
+Looks specifically at upregulated genes in our significant list.
+
+```{r}
+ALS_Comp_Markers
+Spec_upreg_genes_list
+```
+
+##### Fus
+
+```{r}
+FUS_unique_motor <- setdiff(Spec_upreg_genes_list$FUSMotor, Spec_upreg_genes_list$TARDBPMotor) #the setdiff function id directional meaning that these are the FUS unique ones as it is set first in the function.
+
+gost_res_FUSUniMot <- gost(
+  query = FUS_unique_motor,      # vector of all the significant genes
+  custom_bg = custom_bg, # This is the custom gene list used to reduce noise
+  organism = "hsapiens",       # Human database
+  ordered_query = FALSE,       # Keep FALSE unless you pre-sorted your list by Log2FC
+  significant = TRUE,          # only show pathways that pass the FDR threshold
+  user_threshold = 0.05,       # adjusted p-value cutoff
+  correction_method = "g_SCS", #custom correction method. more gentle FDR
+  sources = c("GO:BP", "KEGG", "REAC"),#GO Biological Process, KEGG, and Reactome
+  evcodes = T     #Gives the genes in each row
+)
+
+##Next is to calculate the similarity matrix to be able to run the reducesimmatrix
+#UniFUSMotsimMatrix <- calculateSimMatrix(gost_res_FUSUniMot$result$term_id, orgdb="org.Hs.eg.db", ont="BP", method="Rel")
+
+##Next is to calculate the scores used in the reduce simmatrix calculations
+#UniFUSMotscores <- setNames(-log10(gost_res_FUSUniMot$result$p_value), gost_res_FUSUniMot$result$term_id)
+
+##Next is the calculation of the reduceSimMAtrix itself
+#UniFUSMotreducedTerms <- reduceSimMatrix(UniFUSMotsimMatrix, UniFUSMotscores, threshold=0.7, orgdb="org.Hs.eg.db")
+
+#UniFUSMotreducedTerms
+
+##Visualisations
+#treemapPlot(UniFUSMotreducedTerms)
+#heatmapPlot(UniFUSMotsimMatrix, UniFUSMotreducedTerms, annotateParent=TRUE, annotationLabel="parentTerm", fontsize=6)
+
+#Dotplot
+#Filtering the results based on the term size to that they are not too generic and so that the smallest ones are not included. 
+filtered_gost_res_FUSUniMot <- gost_res_FUSUniMot$result %>% filter(source == "GO:BP") %>% filter(term_size >= 10 & term_size <= 1000) %>% arrange(p_value)
+
+fil_FUSUniMot_dotplot <- filtered_gost_res_FUSUniMot %>% # Change to your object
+  arrange(p_value) %>% 
+  head(10) %>% 
+  ggplot(aes(x = -log10(p_value), y = reorder(term_name,-log10(p_value)))) +
+    geom_point(aes(size = intersection_size, color = p_value)) +
+    scale_color_gradient(low = "orange", high = "blue") +
+    labs(title = paste("FUS Unique Upregulated Genes (Motor Neurons)"), # change to your title ":\nTop GO Terms" 
+      x = bquote(~-Log[10]~ 'p adjust'),
+      y = "GO Terms",
+      size = "Gene Count") +
+theme_minimal(base_size = 10) +
+theme(
+  text = element_text(size = 10),
+  axis.text.y = element_text(size = 8), # Scaled down specifically for long GO terms
+  plot.title = element_text(face = "bold", size = 12, hjust = 0.5, lineheight = 1.2)
+)
+
+
+fil_FUSUniMot_dotplot
+
+#Better naming for save file
+DE.GO.Det_FUSup <- fil_FUSUniMot_dotplot
+
+ggsave(
+  filename = file.path(DE.GO_DotPath_detail, "DE.GO.Det_FUSup.png"), 
+  plot = DE.GO.Det_FUSup, 
+  width = 10,      # Generous width for long GO term descriptions
+  height = 8,     # Perfect height for a Top 10 list
+  units = "in", 
+  dpi = 300       # High resolution for publication/thesis printing
+)
+```
+
+##### TARDBP
+
+```{r}
+TARDBP_unique_motor <- setdiff(Spec_upreg_genes_list$TARDBPMotor, Spec_upreg_genes_list$FUSMotor) #Same again for setting the tardbp list first
+
+gost_res_TARDBPUniMot <- gost(
+  query = TARDBP_unique_motor,      # vector of all the significant genes
+  custom_bg = custom_bg, # This is the custom gene list used to reduce noise
+  organism = "hsapiens",       # Human database
+  ordered_query = FALSE,       # Keep FALSE unless you pre-sorted your list by Log2FC
+  significant = TRUE,          # only show pathways that pass the FDR threshold
+  user_threshold = 0.05,       # adjusted p-value cutoff
+  correction_method = "g_SCS", #custom correction method. more gentle FDR
+  sources = c("GO:BP", "KEGG", "REAC"),#GO Biological Process, KEGG, and Reactome
+  evcodes = T     #Gives the genes in each row
+)
+
+##Next is to calculate the similarity matrix to be able to run the reducesimmatrix
+#UniTARDBPMotsimMatrix <- calculateSimMatrix(gost_res_TARDBPUniMot$result$term_id, orgdb="org.Hs.eg.db", ont="BP", method="Rel")
+
+##Next is to calculate the scores used in the reduce simmatrix calculations
+#UniTARDBPMotscores <- setNames(-log10(gost_res_TARDBPUniMot$result$p_value), gost_res_TARDBPUniMot$result$term_id)
+
+##Next is the calculation of the reduceSimMAtrix itself
+#UniTARDBPMotreducedTerms <- reduceSimMatrix(UniTARDBPMotsimMatrix, UniTARDBPMotscores, threshold=0.7, orgdb="org.Hs.eg.db")
+
+#UniTARDBPMotreducedTerms
+
+##Visualisations
+#treemapPlot(UniTARDBPMotreducedTerms)
+#heatmapPlot(UniTARDBPMotsimMatrix, UniTARDBPMotreducedTerms, annotateParent=TRUE, annotationLabel="parentTerm", fontsize=6)
+
+
+##Dotplot 
+###Filtering 
+filtered_gost_res_TARDBPUniMot <- gost_res_TARDBPUniMot$result %>% filter(source == "GO:BP") %>% filter(term_size >= 10 & term_size <= 1000) %>% arrange(p_value)
+
+###Visalisation
+TARDBPUniMot_dotplot <- filtered_gost_res_TARDBPUniMot %>% # Change to your object
+  arrange(p_value) %>% 
+  head(10) %>% 
+  ggplot(aes(x = -log10(p_value), y = reorder(term_name,-log10(p_value)))) +
+    geom_point(aes(size = intersection_size, color = p_value)) +
+    scale_color_gradient(low = "orange", high = "blue") +
+    labs(title = paste("TARDBP Unique Upregulated Genes (Motor Neurons)"), # change to your title
+      x = bquote(~-Log[10]~ 'p adjust'),
+      y = "GO Terms",
+      size = "Gene Count") +
+theme_minimal(base_size = 10) +
+theme(
+  text = element_text(size = 10),
+  axis.text.y = element_text(size = 8), # Scaled down specifically for long GO terms
+  plot.title = element_text(face = "bold", size = 12, hjust = 0.5, lineheight = 1.2)
+)
+
+TARDBPUniMot_dotplot
+
+#Better naming for save file
+DE.GO.Det_TARDBPup <- TARDBPUniMot_dotplot
+
+ggsave(
+  filename = file.path(DE.GO_DotPath_detail, "DE.GO.Det_TARDBPup.png"), 
+  plot = DE.GO.Det_TARDBPup, 
+  width = 10,      # Generous width for long GO term descriptions
+  height = 8,     # Perfect height for a Top 10 list
+  units = "in", 
+  dpi = 300       # High resolution for publication/thesis printing
+)
+```
+
+##### Shared
+
+This GO looks at the list of the up-regulated genes present in both the motor neuron and TARBP mutations. This was done to understand if the mutations are causing the same ontology changes
+
+```{r}
+Shared_ALS_motor <- intersect(Spec_upreg_genes_list$FUSMotor, Spec_upreg_genes_list$TARDBPMotor)
+
+gost_res_SharedMot <- gost(
+  query = Shared_ALS_motor ,      # vector of all the significant genes
+  custom_bg = custom_bg, # This is the custom gene list used to reduce noise
+  organism = "hsapiens",       # Human database
+  ordered_query = FALSE,       # Keep FALSE unless you pre-sorted your list by Log2FC
+  significant = TRUE,          # only show pathways that pass the FDR threshold
+  user_threshold = 0.05,       # adjusted p-value cutoff
+  correction_method = "g_SCS", #custom correction method. more gentle FDR
+  sources = c("GO:BP", "KEGG", "REAC"),#GO Biological Process, KEGG, and Reactome
+  evcodes = T     #Gives the genes in each row
+)
+
+##Dotplot 
+###Filtering 
+filtered_gost_res_SharedMot <- gost_res_SharedMot$result %>% filter(source == "GO:BP") %>% filter(term_size >= 10 & term_size <= 1000) %>% arrange(p_value)
+
+###Visalisation
+FilterUniMot_dotplot <- filtered_gost_res_SharedMot %>% # Change to your object
+  arrange(p_value) %>% 
+  head(10) %>% 
+  ggplot(aes(x = -log10(p_value), y = reorder(term_name,-log10(p_value)))) +
+    geom_point(aes(size = intersection_size, color = p_value)) +
+    scale_color_gradient(low = "orange", high = "blue") +
+    labs(title = paste("Shared Core Upregulated Genes (Motor Neurons)"), # change to your title
+      x = bquote(~-Log[10]~ 'p adjust'),
+      y = "GO Terms",
+      size = "Gene Count") +
+    theme_minimal() +
+   theme(text = element_text(size = 10))
+
+FilterUniMot_dotplot
+
+
+# No need to rrvgo because there are only 14 genes that can not be compressed down any more than from the gene ontology groupings. 
+gost_res_SharedMot$result
+
+# The only term name that could be identified was "Transcriptional Regulation by MECP2"
+# This is interesting becuase MECP2 its an essential epigenetic regulator in human brain development 
+# link - https://pmc.ncbi.nlm.nih.gov/articles/PMC2847695/
+
+#Better naming for save file
+#DE.GO.Det_UPshared <- FilterUniMot_dotplot
+
+#ggsave(
+  #filename = file.path(DE.GO_DotPath_detail, "DE.GO.Det_UPshared.png"), 
+  #plot = DE.GO.Det_UPshared, 
+  #width = 10,      # Generous width for long GO term descriptions
+  #height = 8,     # Perfect height for a Top 10 list
+  #units = "in", 
+  #dpi = 300       # High resolution for publication/thesis printing
+#)
+```
+
+#### Down regulated Motor Genes
+
+Looks specifically at down regulated genes in our significant list.
+
+```{r}
+ALS_Comp_Markers
+Spec_downreg_genes_list 
+```
+
+##### Fus
+
+```{r}
+downFUS_unique_motor <- setdiff(Spec_downreg_genes_list$FUSMotor, Spec_downreg_genes_list$TARDBPMotor) #the setdiff function id directional meaning tha these are the FUS unique ones as it is set first in the function.
+
+gost_res_downFUSUniMot <- gost(
+  query = downFUS_unique_motor,      # vector of all the significant genes
+  custom_bg = custom_bg, # This is the custom gene list used to reduce noise
+  organism = "hsapiens",       # Human database
+  ordered_query = FALSE,       # Keep FALSE unless you pre-sorted your list by Log2FC
+  significant = TRUE,          # only show pathways that pass the FDR threshold
+  user_threshold = 0.05,       # adjusted p-value cutoff
+  correction_method = "g_SCS", #custom correction method. more gentle FDR
+  sources = c("GO:BP", "KEGG", "REAC"),#GO Biological Process, KEGG, and Reactome
+  evcodes = T     #Gives the genes in each row
+)
+
+##Next is to calculate the similarity matrix to be able to run the reducesimmatrix
+#downUniFUSMotsimMatrix <- calculateSimMatrix(gost_res_downFUSUniMot$result$term_id, orgdb="org.Hs.eg.db", ont="BP", method="Rel")
+
+##Next is to calculate the scores used in the reduce simmatrix calculations
+#downUniFUSMotscores <- setNames(-log10(gost_res_downFUSUniMot$result$p_value), gost_res_downFUSUniMot$result$term_id)
+
+##Next is the calculation of the reduceSimMAtrix itself
+#downUniFUSMotreducedTerms <- reduceSimMatrix(downUniFUSMotsimMatrix, downUniFUSMotscores, threshold=0.7, orgdb="org.Hs.eg.db")
+
+#downUniFUSMotreducedTerms
+
+##Visualisations
+#treemapPlot(downUniFUSMotreducedTerms)
+#heatmapPlot(downUniFUSMotsimMatrix, UniFUSMotreducedTerms, annotateParent=TRUE, annotationLabel="parentTerm", fontsize=6)
+
+##Dotplot 
+###Filtering 
+filtered_gost_res_downFUSUniMot <- gost_res_downFUSUniMot$result %>% filter(source == "GO:BP") %>% filter(term_size >= 10 & term_size <= 1000) %>% arrange(p_value)
+
+###Visalisation
+Filter_downFUSUniMot_dotplot <- filtered_gost_res_downFUSUniMot %>% # Change to your object
+  arrange(p_value) %>% 
+  head(10) %>% 
+  ggplot(aes(x = -log10(p_value), y = reorder(term_name,-log10(p_value)))) +
+    geom_point(aes(size = intersection_size, color = p_value)) +
+    scale_color_gradient(low = "orange", high = "blue") +
+    labs(title = paste("FUS Unique Downregulated Genes (Motor Neurons)"), # change to your title
+      x = bquote(~-Log[10]~ 'p adjust'),
+      y = "GO Terms",
+      size = "Gene Count") +
+theme_minimal(base_size = 10) +
+theme(
+  text = element_text(size = 10),
+  axis.text.y = element_text(size = 8), # Scaled down specifically for long GO terms
+  plot.title = element_text(face = "bold", size = 12, hjust = 0.5, lineheight = 1.2)
+)
+
+Filter_downFUSUniMot_dotplot
+
+#Better naming for save file
+DE.GO.Det_FUSdwn <- Filter_downFUSUniMot_dotplot
+
+ggsave(
+  filename = file.path(DE.GO_DotPath_detail, "DE.GO.Det_FUSdwn.png"), 
+  plot = DE.GO.Det_FUSdwn, 
+  width = 10,      # Generous width for long GO term descriptions
+  height = 8,     # Perfect height for a Top 10 list
+  units = "in", 
+  dpi = 300       # High resolution for publication/thesis printing
+)
+```
+
+##### TARDBP
+
+```{r}
+downTARDBP_unique_motor <- setdiff(Spec_downreg_genes_list$TARDBPMotor, Spec_downreg_genes_list$FUSMotor) #Same again do setting the tardbp list first
+
+gost_res_downTARDBPUniMot <- gost(
+  query = downTARDBP_unique_motor,      # vector of all the significant genes
+  custom_bg = custom_bg, # This is the custom gene list used to reduce noise
+  organism = "hsapiens",       # Human database
+  ordered_query = FALSE,       # Keep FALSE unless you pre-sorted your list by Log2FC
+  significant = TRUE,          # only show pathways that pass the FDR threshold
+  user_threshold = 0.05,       # adjusted p-value cutoff
+  correction_method = "g_SCS", #custom correction method. more gentle FDR
+  sources = c("GO:BP", "KEGG", "REAC"),#GO Biological Process, KEGG, and Reactome
+  evcodes = T     #Gives the genes in each row
+)
+
+##Next is to calculate the similarity matrix to be able to run the reducesimmatrix
+#downUniTARDBPMotsimMatrix <- calculateSimMatrix(gost_res_downTARDBPUniMot$result$term_id, orgdb="org.Hs.eg.db", ont="BP", method="Rel")
+
+##Next is to calculate the scores used in the reduce simmatrix calculations
+#downUniTARDBPMotscores <- setNames(-log10(gost_res_downTARDBPUniMot$result$p_value), gost_res_downTARDBPUniMot$result$term_id)
+
+##Next is the calculation of the reduceSimMAtrix itself
+#downUniTARDBPMotreducedTerms <- reduceSimMatrix(downUniTARDBPMotsimMatrix, downUniTARDBPMotscores, threshold=0.7, orgdb="org.Hs.eg.db")
+
+#downUniTARDBPMotreducedTerms
+
+##Visualisations
+#treemapPlot(downUniTARDBPMotreducedTerms)
+#heatmapPlot(downUniTARDBPMotsimMatrix, downUniTARDBPMotreducedTerms, annotateParent=TRUE, annotationLabel="parentTerm", fontsize=6)
+
+##Dotplot 
+###Filtering 
+filtered_gost_res_downTARDBPUniMot <- gost_res_downTARDBPUniMot$result %>% filter(source == "GO:BP") %>% filter(term_size >= 10 & term_size <= 1000) %>% arrange(p_value)
+
+###Visalisation
+Filter_downTARDBPUniMot_dotplot <- filtered_gost_res_downTARDBPUniMot %>% # Change to your object
+  arrange(p_value) %>% 
+  head(10) %>% 
+  ggplot(aes(x = -log10(p_value), y = reorder(term_name,-log10(p_value)))) +
+    geom_point(aes(size = intersection_size, color = p_value)) +
+    scale_color_gradient(low = "orange", high = "blue") +
+    labs(title = paste("TARDBP Unique Downregulated Genes (Motor Neurons)"), # change to your title
+      x = bquote(~-Log[10]~ 'p adjust'),
+      y = "GO Terms",
+      size = "Gene Count") +
+theme_minimal(base_size = 10) +
+theme(
+  text = element_text(size = 10),
+  axis.text.y = element_text(size = 8), # Scaled down specifically for long GO terms
+  plot.title = element_text(face = "bold", size = 12, hjust = 0.5, lineheight = 1.2)
+)
+
+Filter_downTARDBPUniMot_dotplot
+
+#Better naming for save file
+DE.GO.Det_TARDBPdwn <- Filter_downTARDBPUniMot_dotplot
+
+ggsave(
+  filename = file.path(DE.GO_DotPath_detail, "DE.GO.Det_TARDBPdwn.png"), 
+  plot = DE.GO.Det_TARDBPdwn, 
+  width = 10,      # Generous width for long GO term descriptions
+  height = 8,     # Perfect height for a Top 10 list
+  units = "in", 
+  dpi = 300       # High resolution for publication/thesis printing
+)
+```
+
+##### Shared
+
+```{r}
+downShared_ALS_motor <- intersect(Spec_downreg_genes_list$FUSMotor, Spec_downreg_genes_list$TARDBPMotor)
+
+downShared_ALS_motor
+
+gost_res_downSharedMot <- gost(
+  query = downShared_ALS_motor,      # vector of all the significant genes
+  custom_bg = custom_bg, # This is the custom gene list used to reduce noise
+  organism = "hsapiens",       # Human database
+  ordered_query = FALSE,       # Keep FALSE unless you pre-sorted your list by Log2FC
+  significant = T,          # only show pathways that pass the FDR threshold
+  user_threshold = 0.05,       # adjusted p-value cutoff
+  correction_method = "g_SCS", #custom correction method. more gentle FDR
+  sources = c("GO:BP", "KEGG", "REAC"),#GO Biological Process, KEGG, and Reactome
+  evcodes = T     #Gives the genes in each row
+)
+
+# No need to rrvgo because there are only 3 genes that can not be compressed down any more. 
+gost_res_downSharedMot$result
+
+
+##Dotplot 
+###Filtering 
+#filtered_gost_res_downSharedMot <- gost_res_downSharedMot$result %>% filter(source == "GO:BP") %>% filter(term_size >= 10 & term_size <= 1000) %>% arrange(p_value)
+
+
+###Visalisation
+#Filter_downSharedMot_dotplot <- filtered_gost_res_downSharedMot %>% # Change to your object
+  #arrange(p_value) %>% 
+  #head(10) %>% 
+  #ggplot(aes(x = -log10(p_value), y = reorder(term_name,-log10(p_value)))) +
+    #geom_point(aes(size = intersection_size, color = p_value)) +
+    #scale_color_gradient(low = "orange", high = "blue") +
+    #labs(title = paste("Shared Core Downregulated Genes (Motor Neurons)"), # change to your title
+      #x = bquote(~-Log[10]~ 'p adjust'),
+      #y = "GO Terms",
+      #size = "Gene Count") +
+    #theme_minimal() +
+   #theme(text = element_text(size = 10))
+
+#Filter_downSharedMot_dotplot
+
+#Better naming for save file
+#DE.GO.Det_DWNshared <- Filter_downSharedMot_dotplot
+
+#ggsave(
+  #filename = file.path(DE.GO_DotPath_detail, "DE.GO.Det_DWNshared.png"), 
+  #plot = DE.GO.Det_DWNshared, 
+  #width = 10,      # Generous width for long GO term descriptions
+  #height = 8,     # Perfect height for a Top 10 list
+  #units = "in", 
+  #dpi = 300       # High resolution for publication/thesis printing
+#)
+```
+
+
+###gp2 Summary Statistics
+```{r}
+##Upregulated
+nrow(filtered_gost_res_FUSUniMot)  # Total significant GO:BP terms for Regulated FUS 
+nrow(filtered_gost_res_TARDBPUniMot) # Total significant GO:BP terms for Regulated TARDBP 
+
+##Downregulated
+nrow(filtered_gost_res_downFUSUniMot)   # Total significant GO:BP terms for Upregulated DEGs
+nrow(filtered_gost_res_downTARDBPUniMot)   # Total significant GO:BP terms for Downregulated DEGs
+```
+
+
+##Patchwork This code is used to make the final figures in this script into one figure using patchwork.
+
+###Final Construction (2og)
+
+```{r}
+# 1. Assemble Volcano rows AND WRAP THEM
+volc_top <- (comp_volcano_plots[["FUS_Progenitors"]] + labs(tag = "A)") | 
+             comp_volcano_plots[["FUS_Interneurons"]] + labs(tag = "B)") | 
+             comp_volcano_plots[["FUS_Motor_Neurons"]] + labs(tag = "C)"))
+
+volc_bot <- (comp_volcano_plots[["TARDBP_Progenitors"]] + labs(tag = "D)") | 
+             comp_volcano_plots[["TARDBP_Interneurons"]] + labs(tag = "E)") | 
+             comp_volcano_plots[["TARDBP_Motor_Neurons"]] + labs(tag = "F)"))
+
+# The wrapper protects the 3-column layout from aligning with the 2-column layouts
+volcano_row <- wrap_elements(
+  (volc_top / volc_bot) + 
+  plot_layout(guides = "collect") & 
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5), 
+    plot.tag = element_text(face = "bold", size = 20),
+    legend.position = "bottom"
+  )
+)
+
+# 2. Capture UpSet plots (Leave this exactly as is!)
+up_up <- wrap_elements(grid.grabExpr(print(Detail.DE_UpregSet), width = 12, height = 8)) + 
+  labs(tag = "G)", title = "Intersecting Genes (Upregulated)")
+
+up_down <- wrap_elements(grid.grabExpr(print(Detail.DE_DwnregSet), width = 12, height = 8)) + 
+  labs(tag = "H)", title = "Intersecting Genes (Downregulated)")
+
+upset_row <- (up_up | up_down) & 
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5), 
+    plot.tag = element_text(face = "bold", size = 20) 
+  )
+
+# 3. Assemble GO Row AND WRAP IT
+go_top <- (DE.GO.Det_FUSup + labs(tag = "I)") | DE.GO.Det_TARDBPup + labs(tag = "J)"))
+go_bot <- (DE.GO.Det_FUSdwn + labs(tag = "K)") | DE.GO.Det_TARDBPdwn + labs(tag = "L)"))
+
+# The wrapper stops the massive Y-axis text from stretching the Volcano plots above it
+go_row <- wrap_elements(
+  (go_top / go_bot) & 
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.tag = element_text(face = "bold", size = 20),
+    legend.position = "right"
+  )
+)
+
+# 4. Build the Master Figure
+Figure_4_stacked <- (volcano_row / upset_row / go_row) +
+  plot_layout(
+    heights = c(2.3, 1.2, 2) 
+  ) +
+  plot_annotation(
+    #title = 'Figure 4: Detailed Differential Expression Analysis',
+    theme = theme(plot.title = element_text(size = 22, face = "bold", hjust = 0.5))
+  )
+
+# 5. Save directly to file
+ggsave(
+  filename = "/scratch/prj/dn_hamidlab_msc_proj/k25115470/6_Month_Research_Prj/Results/Figures/Combined_Figures/Figure_4_Stacked.pdf",
+  plot = Figure_4_stacked,
+  width = 24,   
+  height = 28,  
+  dpi = 300,
+  bg = "white"
+)
+```
